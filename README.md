@@ -21,7 +21,7 @@ doas wget -qO /etc/apk/keys/uflinux3.ec384.pub "$REPO/uflinux3.ec384.pub"
 doas mkdir -p /etc/apk/repositories.d
 printf '%s\n' "$REPO" | doas tee /etc/apk/repositories.d/uflinux-apps.list >/dev/null
 doas apk update
-doas apk add photocraft web-browser
+doas apk add photocraft uflinux-files
 ```
 
 Packages are signed with an ECDSA key over P-384, the same keypair UFLinux itself
@@ -38,15 +38,14 @@ packages are built against, and the path the repository is published under.
 | Package | Upstream | Notes |
 | --- | --- | --- |
 | `anicraft`, `cadcraft`, `deckcraft`, `designcraft`, `effectcraft`, `figcraft`, `filmcraft`, `lightcraft`, `materialcraft`, `pdfcraft`, `photocraft`, `soundcraft`, `texturecraft`, `vectorcraft`, `wordcraft` | [Craft apps](https://getartcraft.com/apps) | Rust, always the newest upstream release |
-| `web-browser` | [ungoogled-chromium](https://github.com/ungoogled-software/ungoogled-chromium) on Alpine's `chromium` recipe | Shown as **Web Browser**, Papirus icon; `x86_64` and `aarch64` only |
+| `uflinux-files` | [uflinux3-filemanager](https://github.com/UFlinux-project/uflinux3-filemanager) | Rust, GTK4 file manager; pinned to the head of upstream's default branch, since upstream has no releases |
 
 Craft Anything and ArtCraft Studio are deliberately not packaged here.
 
 Packages are built for every 64-bit architecture UFLinux ships: `x86_64`,
-`aarch64`, `ppc64le`, `s390x` and `riscv64`. The 32-bit architectures (`x86`,
+`aarch64`, `ppc64le` and `riscv64`. The 32-bit architectures (`x86`,
 `armv7`) are not built: a 32-bit `rustc` runs out of address space linking the
-bigger Craft binaries, and Alpine's own builders cannot link Chromium on armv7
-either. Shared libraries come from
+bigger Craft binaries. Shared libraries come from
 Alpine wherever a compatible package exists (`ffmpeg`, `openh264`, `pipewire`,
 `mesa`, `fontconfig`, `icu`, ...), so an installed app pulls dependencies that
 the base system already provides instead of carrying its own copies.
@@ -65,16 +64,18 @@ scripts/build.sh                 thin wrapper so `sh scripts/build.sh` works
 scripts/ci-matrix.py             the GitHub Actions matrix, from the config files
 scripts/gen-app-recipes.py       renders the Craft APKBUILDs from the lockfile
 scripts/update-checksums.py      bumps the lockfile to the newest upstream release
-scripts/update-browser.py        bumps the web-browser recipe to Alpine's chromium
+scripts/update-files.py          re-pins uflinux-files to upstream's default branch
 scripts/collect-packages.py      turns workflow artifacts back into out/packages/<arch>/
 .github/workflows/build.yml      build every package, then publish the repository
-.github/workflows/update.yml     daily: bump the lockfile and browser, release if upstream moved
+.github/workflows/update.yml     daily: bump the lockfile and uflinux-files, release if upstream moved
 ```
 
 The fifteen Craft recipes are generated, not hand-written: `config/apps.lock.json`
 is the input and `scripts/gen-app-recipes.py` is the formatter. CI regenerates
 them and fails if the result differs from what is committed, so a recipe can
-never drift from the lockfile.
+never drift from the lockfile. `aports/apps/uflinux-files/APKBUILD` is the one
+hand-written recipe; it is deliberately absent from the lockfile, because the
+generator would otherwise refuse it, and its pin lives in the recipe itself.
 
 ## Building locally
 
@@ -119,7 +120,7 @@ Useful details:
 
 Before pushing, the checks CI runs are all local: `python3 scripts/gen-app-recipes.py`
 (recipes must match the lockfile), `python3 scripts/update-checksums.py --check`,
-`python3 scripts/update-browser.py --check`,
+`python3 scripts/update-files.py --check`,
 `shellcheck` plus `busybox ash -n` on every shell file under `aports/` and
 `scripts/` - recipes, the helper they source, and the scripts a recipe installs
 alike, because abuild is `ash`, not `bash`, and a bashism only shows up as a
@@ -129,12 +130,14 @@ See [docs/adding-an-app.md](docs/adding-an-app.md) for the details.
 ## Releasing
 
 Every day, `.github/workflows/update.yml` runs `scripts/update-checksums.py` for
-the Craft apps and `scripts/update-browser.py` for the browser (which follows
-Alpine's `community/chromium` recipe rather than a release feed - see
-[docs/browser.md](docs/browser.md)). If nothing moved, that is the end of it. If
-anything did, the workflow commits the new lockfile, its regenerated recipes and
-the browser recipe to `main`, tags the commit, and starts a release of it - so an
-upstream release becomes a package here without anyone noticing it first.
+the Craft apps and `scripts/update-files.py` for the file manager. Upstream has
+no releases to resolve there, so that script follows the head of
+[uflinux3-filemanager](https://github.com/UFlinux-project/uflinux3-filemanager)'s
+default branch and re-pins the recipe to it. If nothing moved, that is the end of
+it. If anything did, the workflow commits the new lockfile, its regenerated
+recipes and the re-pinned recipe to `main`, tags the commit, and starts a release
+of it - so an upstream release becomes a package here without anyone noticing it
+first.
 
 Tags are dates, not versions: `v<year>.<month>.<number-in-month>`. No single
 number describes fifteen apps, and the build workflow only requires a tag that
@@ -148,22 +151,35 @@ signing key anyway - publishing with a different one would lock existing clients
 out. Publishing replaces the whole repository, so it only ever happens from a run
 that built every architecture.
 
+A release dispatched by the update job rebuilds only the packages it bumped; the
+names travel as the `packages` input of the dispatch. Everything else is taken
+from the repository already deployed: `build.py --stage index` reads the live
+`APKINDEX.tar.gz` per architecture, downloads the APKs it lists and indexes them
+again beside the fresh ones, so the published repository stays complete. If a
+staged change touches something shared rather than a bumped recipe - the
+architecture list, `aports/apps/craft-common.sh` - the update job drops the list
+and rebuilds everything instead. A hand-made tag, the weekly schedule and a
+manual run always rebuild everything.
+
+Publication no longer waits for every shard: `publish` runs even when a build
+failed, so the packages that did build are published and a package whose shard
+failed keeps the version already published. What is *not* tolerated is a package
+that is neither built nor published - a scoped run passes `--expect-packages` and
+`build.py` fails rather than publishing a repository that quietly lost a package.
+
 The automatic bump has no review step, so the trade is that a bad bump turns the
-matrix run red rather than a pull request yellow. What limits the damage is that
-releasing and publishing are separate: a bump whose build fails leaves the
-previously published repository in place, and the tag stays as the record of what
-was attempted. Nothing retries on its own - the lockfile is already current, so
-the next day's check finds nothing to do - which means a red release run is the
-thing to watch, and fixing the recipe and re-tagging is a human job. If upstream
-is unreachable, or one app's release turns out to be mis-tagged, the update
-workflow fails without committing anything, naming the app.
+matrix run red rather than a pull request yellow. Nothing retries on its own - the
+lockfile is already current, so the next day's check finds nothing to do - which
+means a red release run is the thing to watch, and fixing the recipe and
+re-tagging is a human job. If upstream is unreachable, or one app's release turns
+out to be mis-tagged, the update workflow fails without committing anything,
+naming the app.
 
-Publication is all or nothing: one failing shard fails the build stage, which
-skips `publish`. Shards do not cancel each other (`fail-fast: false`), so a run
-reports every architecture that is broken rather than the first one. A run that
-would publish but cannot read the signing key fails in the first job, before any
-package is built, because packages are signed as they are built and the index will
-not describe one it cannot verify.
+A run that would publish but cannot read the signing key fails in the first job,
+before any package is built, because packages are signed as they are built and the
+index will not describe one it cannot verify. That also applies to the carried
+over APKs: they were signed by an earlier run of this same workflow with the same
+key, so after rotating `APK_SIGNING_*` do a full release before relying on a
+partial one.
 
-See [docs/browser.md](docs/browser.md) for the Chromium pipeline and how to bump
-it, and [docs/adding-an-app.md](docs/adding-an-app.md) to add or update a package.
+See [docs/adding-an-app.md](docs/adding-an-app.md) to add or update a package.

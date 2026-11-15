@@ -22,6 +22,7 @@ Layout produced under --outdir:
 import argparse
 import contextlib
 import hashlib
+import io
 import json
 import os
 import platform
@@ -30,7 +31,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -38,11 +41,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 CONFIG = json.loads((PROJECT / "config/repository.json").read_text())
 ARCHES = json.loads((PROJECT / "config/architectures.json").read_text())
 APPS = json.loads((PROJECT / "config/apps.lock.json").read_text())["apps"]
-PACKAGES = sorted([*APPS, "web-browser"])
-
-# Alpine only ships chromium for these architectures, and so do we until the
-# port is proven on the emulated ones.
-BROWSER_ARCHES = set(CONFIG["browser_arches"])
+PACKAGES = sorted([*APPS, "uflinux-files"])
 
 # Which target architectures a host can execute without emulation, keyed by the
 # `uname -m` of the host. Every architecture we build is 64-bit and its Alpine
@@ -55,9 +54,12 @@ NATIVE = {
     "x86_64": {"x86_64"},
     "aarch64": {"aarch64"},
     "ppc64le": {"ppc64le"},
-    "s390x": {"s390x"},
     "riscv64": {"riscv64"},
 }
+
+# Alpine arch names whose toolchain is a 32-bit process. See the LTO comment in
+# stage_packages(); no architecture listed here is currently built.
+ARCH32 = {"x86", "armv7"}
 
 # Free space a Rust release build plus an Alpine toolchain comfortably needs.
 MINIMUM_FREE_BYTES = 10 * 1024**3
@@ -76,6 +78,206 @@ def digest(path, algorithm="sha512"):
     return hasher.hexdigest()
 
 
+# apk's version grammar, from apk-tools src/version.c:
+#   digit{.digit}...{letter}{_suffix{#}}...{~hex}{-r#}
+# The numbers are apk's own token enum values, used only to reject a version
+# whose parts appear in an order apk would not accept.
+# apk splits a version-release string into tokens; the ranks mirror the
+# TOKEN_* enum in apk-tools src/version.c, so a token list can be compared with
+# the same lockstep walk apk itself uses.
+PART = {
+    "initial_digit": 0,
+    "digit": 1,
+    "letter": 2,
+    "suffix": 3,
+    "suffix_no": 4,
+    "commit_hash": 5,
+    "revision_no": 6,
+    "end": 7,
+}
+
+# apk's suffix enum: the empty name appears twice, and the gap between _rc and
+# _cvs is the plain release, which is why a pre-release ranks below a version
+# that simply ends.
+SUFFIX_RANK = {
+    "": 0,
+    "alpha": 1,
+    "beta": 2,
+    "pre": 3,
+    "rc": 4,
+    "none": 5,
+    "cvs": 6,
+    "svn": 7,
+    "git": 8,
+    "hg": 9,
+    "p": 10,
+}
+
+DIGIT_LIKE = {PART["initial_digit"], PART["digit"], PART["suffix_no"],
+              PART["revision_no"]}
+LOWER = set("abcdefghijklmnopqrstuvwxyz")
+
+
+def version_tokens(version):
+    """Tokenise an apk version-release string the way apk-tools does.
+
+    Returns ``(rank, number, raw, suffix)`` tuples, where ``rank`` mirrors the
+    TOKEN_* enum, ``number`` is the numeric value of a digit-like token (None
+    when zero padded, which apk then compares as text), and ``suffix`` is the
+    rank of a version suffix. Raises ValueError for anything apk would reject,
+    so a malformed pin fails loudly instead of sorting wrongly.
+    """
+    tokens = []
+
+    def emit(kind, text, suffix=None):
+        rank = PART[kind]
+        number = None
+        if rank in DIGIT_LIKE and text[0] != "0":
+            number = int(text)
+        tokens.append((rank, number, text, suffix))
+        return rank
+
+    def take_digits(text):
+        match = re.match(r"[0-9]+", text)
+        if not match:
+            raise ValueError("malformed apk version: " + version)
+        return match.group(), text[match.end():]
+
+    group, rest = take_digits(version)
+    state = emit("initial_digit", group)
+    while rest:
+        head, rest = rest[0], rest[1:]
+        if head in LOWER:
+            # A letter token is one character wide, and apk only accepts a
+            # lowercase one; anything else ends the walk as an invalid token.
+            if state > PART["digit"]:
+                raise ValueError("malformed apk version: " + version)
+            state = emit("letter", head)
+        elif head in ".0123456789":
+            if state <= PART["digit"]:
+                kind = "digit"
+            elif state in (PART["suffix"], PART["suffix_no"]):
+                kind = "suffix_no"
+            else:
+                raise ValueError("malformed apk version: " + version)
+            group, rest = take_digits(rest if head == "." else head + rest)
+            state = emit(kind, group)
+        elif head == "_":
+            if state > PART["suffix_no"]:
+                raise ValueError("malformed apk version: " + version)
+            match = re.match(r"[a-z]+", rest)
+            if not match:
+                raise ValueError("malformed apk version: " + version)
+            group, rest = match.group(), rest[match.end():]
+            if group not in SUFFIX_RANK or group == "none":
+                raise ValueError("unknown apk version suffix: _" + group)
+            state = emit("suffix", group, SUFFIX_RANK[group])
+        elif head == "~":
+            if state >= PART["commit_hash"]:
+                raise ValueError("malformed apk version: " + version)
+            match = re.match(r"[0-9a-f]+", rest)
+            if not match:
+                raise ValueError("malformed apk version: " + version)
+            group, rest = match.group(), rest[match.end():]
+            state = emit("commit_hash", group)
+        elif head == "-":
+            if state >= PART["revision_no"] or not rest.startswith("r"):
+                raise ValueError("malformed apk version: " + version)
+            group, rest = take_digits(rest[1:])
+            state = emit("revision_no", group)
+        else:
+            raise ValueError("malformed apk version: " + version)
+    return tokens
+
+
+def _token_cmp(left, right):
+    """apk's token_cmp: how one pair of same-kind tokens orders."""
+    rank, number, raw, suffix = left
+    other_number, other_raw, other_suffix = right[1], right[2], right[3]
+    if rank in DIGIT_LIKE and number is not None and other_number is not None:
+        return (number > other_number) - (number < other_number)
+    if rank == PART["suffix"]:
+        return (suffix > other_suffix) - (suffix < other_suffix)
+    if rank == PART["letter"]:
+        # apk compares only the first character, and a letter token is one
+        # character wide anyway.
+        return (raw > other_raw) - (raw < other_raw)
+    return (raw > other_raw) - (raw < other_raw)
+
+
+def version_compare(left, right):
+    """Compare two apk version-release strings: negative, zero, or positive.
+
+    A faithful port of apk_version_compare(): walk both token lists in lockstep
+    and stop at the first difference. When one version runs out, the longer one
+    wins unless its next token is a pre-release suffix (_alpha, _beta, _pre,
+    _rc), which ranks below the plain release.
+    """
+    a = version_tokens(left)
+    b = version_tokens(right)
+    for index in range(min(len(a), len(b))):
+        if a[index][0] != b[index][0]:
+            break
+        result = _token_cmp(a[index], b[index])
+        if result:
+            return result
+    else:
+        index = min(len(a), len(b))
+    tail_a = a[index] if index < len(a) else (PART["end"], None, "", None)
+    tail_b = b[index] if index < len(b) else (PART["end"], None, "", None)
+    if tail_a[0] == tail_b[0]:
+        return 0
+    if tail_a[0] == PART["suffix"] and tail_a[3] < SUFFIX_RANK["none"]:
+        return -1
+    if tail_b[0] == PART["suffix"] and tail_b[3] < SUFFIX_RANK["none"]:
+        return 1
+    return -1 if tail_a[0] > tail_b[0] else 1
+
+
+def apk_metadata(path):
+    """(name, version, origin) from an APK's own .PKGINFO.
+
+    The tar container is uncompressed and .PKGINFO is stored plain, so this
+    needs no apk tooling. `origin` is the recipe that produced the file, which
+    is what identifies all of a package's subpackages as one unit.
+    """
+    with tarfile.open(path, mode="r:*") as archive:
+        member = archive.extractfile(".PKGINFO")
+        if member is None:
+            raise RuntimeError(str(path) + " contains no .PKGINFO")
+        fields = {}
+        for line in member.read().decode("utf-8", "replace").splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                fields[key.strip()] = value.strip()
+    missing = [f for f in ("pkgname", "pkgver", "origin") if not fields.get(f)]
+    if missing:
+        raise RuntimeError(f"{path}: .PKGINFO has no {' nor '.join(missing)}")
+    return fields["pkgname"], fields["pkgver"], fields["origin"]
+
+
+def index_records(blob):
+    """Parse the APKINDEX member of an APKINDEX.tar.gz into one dict per package.
+
+    Keys are apk's single-letter field names; the ones relied on here are P
+    (name), V (version-release), A (architecture), o (origin) and C (checksum).
+    """
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:*") as archive:
+        member = archive.extractfile("APKINDEX")
+        if member is None:
+            return
+        record = {}
+        for line in member.read().decode("utf-8", "replace").splitlines():
+            key, sep, value = line.partition(":")
+            if sep and len(key) == 1:
+                record[key] = value
+            elif not line and record:
+                yield record
+                record = {}
+        if record:
+            yield record
+
+
 class Build:
     def __init__(self, args):
         self.args = args
@@ -89,6 +291,10 @@ class Build:
         # repository_path/, the signing key next to it, and a landing page.
         self.pages = self.out / "pages"
         self.key = CONFIG["signing_key_id"]
+        # The published repository to complete a partial release from. Empty
+        # means "nothing to carry over", which is what a local run wants.
+        self.baseline = getattr(args, "baseline_url", "").strip().rstrip("/")
+        self.expect = [p for p in getattr(args, "expect_packages", "").split(",") if p]
         self.epoch = os.environ.get("SOURCE_DATE_EPOCH", "")
         self.mounts = []
         self.env = {
@@ -333,27 +539,37 @@ class Build:
                        f'PACKAGER_PRIVKEY="{self.env["PACKAGER_PRIVKEY"]}"\n'
                        f'PACKAGER_PUBKEY="/var/lib/uflinux-apps/keys/{self.key}"\n')
             jobs = os.environ.get("CARGO_BUILD_JOBS", "")
-            # Under qemu-user, the compile job count and the final link are the
-            # two places where an emulated build stops being a merely slower
-            # native one. One job keeps instruction translation inside the
-            # runner's memory. And because the Craft release profile asks for
-            # thin LTO with a single codegen unit, the last link of the biggest
-            # binary is one single-threaded pass over the whole program: measured
-            # at over half an hour natively, and it is the phase most likely to
-            # run past the runner's time limit - the one phase `jobs` cannot
-            # shorten. Turning LTO off makes that link parallel and far shorter,
-            # for a slightly larger and marginally slower binary, which is a
-            # trade worth making only where the alternative is that the
-            # architecture is not published at all. A native build therefore gets
-            # upstream's own profile. (32-bit targets need the same LTO override
-            # even natively - a 32-bit rustc OOMs on that link whatever runs it -
-            # which is part of why `x86` and `armv7` are no longer built here.)
+            # Two independent reasons to override the release profile, and the
+            # Craft profiles ask for thin LTO with a single codegen unit, so the
+            # last link of the biggest binary is one single-threaded pass over
+            # the whole program.
+            #
+            # Under qemu-user, the compile job count and that link are the two
+            # places where an emulated build stops being a merely slower native
+            # one. One job keeps instruction translation inside the runner's
+            # memory, and the link is measured at over half an hour natively -
+            # the phase most likely to run past the runner's time limit, and the
+            # one `jobs` cannot shorten. Turning LTO off makes it parallel and
+            # far shorter, for a slightly larger and marginally slower binary: a
+            # trade worth making where the alternative is that the architecture
+            # is not published at all. A native 64-bit build gets upstream's own
+            # profile.
+            #
+            # A 32-bit target needs LTO off for a second, harder reason: a
+            # 32-bit rustc cannot address that link at all, however many cores
+            # run it, so the override is about addressing rather than speed.
+            # ARCH32 is currently empty of built architectures - `x86` and
+            # `armv7` are not in config/architectures.json - so this branch is
+            # dormant. Building one would also need a rootfs entry in
+            # config/repository.json and, for a real 32-bit host, the `armv7l`
+            # name difference noted by NATIVE above.
             emulated = self.arch not in NATIVE.get(platform.machine(), set())
-            cargo = {} if not emulated else {
-                "CARGO_BUILD_JOBS": "1",
+            cargo = {} if not (emulated or self.arch in ARCH32) else {
                 "CARGO_PROFILE_RELEASE_LTO": "false",
                 "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "16",
             }
+            if emulated:
+                cargo["CARGO_BUILD_JOBS"] = "1"
             if jobs:
                 cargo["CARGO_BUILD_JOBS"] = jobs
             for package in self.args.selected():
@@ -410,6 +626,106 @@ class Build:
         ]
         (self.pages / "index.html").write_text("\n".join(lines) + "\n")
 
+    def prune_duplicates(self, directory):
+        """Drop every but the newest APK of each package name; return what is left.
+
+        Two APKs of one name in one architecture directory make `apk index`
+        describe both, and apk then picks the newer at install time while the
+        repository ships both files. That happens when a carried-over package is
+        also present in the spool at an older version, so it is resolved here in
+        favour of the newest.
+        """
+        newest = {}
+        for apk in directory.glob("*.apk"):
+            name, version, _ = apk_metadata(apk)
+            if name not in newest or version_compare(version, newest[name][0]) > 0:
+                newest[name] = (version, apk)
+        keep = {apk.name for _, apk in newest.values()}
+        for apk in directory.glob("*.apk"):
+            if apk.name not in keep:
+                print("removing superseded " + apk.name)
+                apk.unlink()
+        return sorted(directory.glob("*.apk"))
+
+    def carry_over(self, directory):
+        """Add the packages this run did not build from the published repository.
+
+        A release that builds a subset, or one where a shard failed, would
+        otherwise publish a repository missing whatever it did not rebuild. The
+        live Pages deployment is the baseline: its APKINDEX says what is
+        published, and the APKs it names are fetched back into the spool so that
+        `apk index` describes them again. Only entries whose origin is a recipe
+        this repository builds are adopted, so a third-party APK sharing the
+        directory can never be picked up, and everything this run did build is
+        replaced by the fresh APK rather than kept beside it.
+
+        apk verifies each APK's own signature before indexing it, so this only
+        works while the published repository was signed with the current key.
+        After a key rotation, run a full release before relying on this.
+
+        Returns the set of origins now present in the directory.
+        """
+        arch = directory.name
+        origins = set()
+        apks = sorted(directory.glob("*.apk"))
+        for apk in apks:
+            origins.add(apk_metadata(apk)[2])
+        if not self.baseline:
+            return origins
+        url = "/".join((self.baseline, CONFIG["repository_path"], arch,
+                        "APKINDEX.tar.gz"))
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                published = response.read()
+        except urllib.error.HTTPError as failure:
+            # A 404 is the first release for this architecture, or the first one
+            # after it was dropped from the matrix: nothing to keep.
+            if failure.code != 404:
+                raise RuntimeError(f"cannot read {url}: HTTP {failure.code}")
+            print(f"note: nothing published for {arch} yet, nothing carried over")
+            return origins
+        except urllib.error.URLError as failure:
+            raise RuntimeError(f"cannot read {url}: {failure.reason}")
+        # One entry per package name, newest first: a published repository holds
+        # one APK per name, but the index is not guaranteed to say so.
+        wanted = {}
+        for record in index_records(published):
+            name, version, origin = (record.get("P", ""), record.get("V", ""),
+                                     record.get("o", ""))
+            if record.get("A") != arch or origin not in PACKAGES:
+                continue
+            if origin in origins or not re.fullmatch(r"[\w.+~-]+", name):
+                continue
+            if not re.fullmatch(r"[\w.+~-]+", version):
+                continue
+            if name not in wanted or version_compare(version, wanted[name][0]) > 0:
+                wanted[name] = (version, origin)
+        carried = set()
+        for name, (version, origin) in sorted(wanted.items()):
+            filename = f"{name}-{version}.apk"
+            source = "/".join((self.baseline, CONFIG["repository_path"], arch, filename))
+            destination = directory / filename
+            try:
+                with urllib.request.urlopen(source, timeout=300) as response:
+                    destination.write_bytes(response.read())
+            except urllib.error.HTTPError as failure:
+                # The index promised the package but the file is gone. Skipping
+                # it keeps the rest of the release intact; --expect-packages
+                # turns it into a failure when the package was supposed to be
+                # rebuilt anyway.
+                print(f"::warning::{filename} is indexed but not published "
+                      f"(HTTP {failure.code}); dropped from this release")
+                continue
+            except urllib.error.URLError as failure:
+                raise RuntimeError(f"cannot download {source}: {failure.reason}")
+            origins.add(origin)
+            carried.add(origin)
+            print("carried " + filename)
+        if carried:
+            print(f"carried {len(carried)} packages ({len(wanted)} files) "
+                  f"previously published for {arch}")
+        return origins
+
     def stage_index(self):
         self.unpack()
         with self.mounted():
@@ -422,14 +738,29 @@ class Build:
             architectures = sorted(p for p in (self.out / "packages").iterdir() if p.is_dir()) if (self.out / "packages").is_dir() else []
             if not architectures:
                 raise RuntimeError("No built packages to index under " + str(self.out / "packages"))
+            if self.expect and not self.baseline:
+                # A scoped run promises every package it did not rebuild is
+                # already published, so it cannot check that promise without a
+                # baseline. Better to say so loudly than to publish a partial
+                # repository and call it a release.
+                raise RuntimeError("--expect-packages needs a baseline: set "
+                                   "PAGES_BASE_URL or pass --baseline-url")
             # Only the architectures that really produced an index are advertised
             # on the landing page: an empty directory is skipped below, and
             # promising one the site does not contain would be wrong.
             indexed = []
             for directory in architectures:
-                apks = sorted(directory.glob("*.apk"))
+                origins = self.carry_over(directory)
+                apks = self.prune_duplicates(directory)
                 if not apks:
                     continue
+                if self.expect:
+                    missing = sorted(set(self.expect) - origins)
+                    if missing:
+                        raise RuntimeError(
+                            f"{directory.name}: {' '.join(missing)} were neither "
+                            "built by this run nor published before, so this "
+                            "release would silently drop them")
                 target = self.root / "repo" / directory.name
                 if target.exists():
                     shutil.rmtree(target)
@@ -477,6 +808,12 @@ def main(argv=None):
     parser.add_argument("--package", action="append", choices=PACKAGES,
                         help="Build only this package (repeatable); default: every recipe")
     parser.add_argument("--stage", choices=["packages", "index", "all"], default="all")
+    parser.add_argument("--baseline-url", default=os.environ.get("PAGES_BASE_URL", ""),
+                        help="URL of the deployed site to carry unpublished "
+                             "packages from; empty disables the carry-over")
+    parser.add_argument("--expect-packages", default="",
+                        help="comma-separated package names that must be present "
+                             "for every indexed architecture")
     parser.add_argument("--workdir", default=str(PROJECT / ".state" / "{arch}"))
     parser.add_argument("--cache", default=str(PROJECT / ".cache/build"))
     parser.add_argument("--outdir", default=str(PROJECT / "out"))
@@ -485,14 +822,10 @@ def main(argv=None):
     # preflight() measures free space on the workdir's filesystem, so it has to
     # exist before anything else looks at it.
     os.makedirs(args.workdir, exist_ok=True)
+    unknown = sorted(set(args.expect_packages.split(",")) - set(PACKAGES) - {""})
+    if unknown:
+        parser.error("--expect-packages names no recipe: " + " ".join(unknown))
     selected = args.package or PACKAGES
-    if args.stage in {"packages", "all"} and "web-browser" in selected and args.arch not in BROWSER_ARCHES:
-        # Alpine only builds chromium for these architectures; the rest would
-        # need out-of-tree patches, so the recipe is skipped rather than failed.
-        print("note: skipping web-browser, unsupported on " + args.arch)
-        selected = [p for p in selected if p != "web-browser"]
-        if not selected:
-            parser.error("web-browser is not built for " + args.arch)
     args.selected = lambda: selected
     build = Build(args)
     build.preflight()

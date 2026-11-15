@@ -40,10 +40,17 @@ daily, that annotation is a backstop - it goes off if the update workflow is
 broken or disabled, not in the normal course of events. A checksum that is simply
 *wrong* is a different matter - abuild verifies it and fails the build.
 
-`web-browser` is not in the lockfile and is not touched by any of this. It is
-still bumped automatically, but by `scripts/update-browser.py` in the same daily
-run, following Alpine rather than a release feed; see
-[docs/browser.md](browser.md).
+`uflinux-files` is not in the lockfile and is not touched by any of this. It is
+still bumped automatically, but by `scripts/update-files.py` in the same daily
+run: upstream has no releases, so that script resolves the head of the upstream
+repository's default branch with `git ls-remote --symref`, re-hashes the archive
+of that commit, and rewrites `_commit`, `pkgver`, `pkgrel` and `sha512sums` in the
+recipe. A commit that also raises the workspace version becomes a new `pkgver`
+with `pkgrel` reset; a commit at the same version raises `pkgrel` instead, which
+matters because a partial release carries the previous build over from the
+published repository and apk has to prefer the new file. Run it the same way
+(`python3 scripts/update-files.py`, or `--check`), and treat its `--check` result
+as a warning rather than a failure, exactly as above.
 
 ### Adding an app
 
@@ -103,9 +110,9 @@ upstream's choice rather than ours.
 
 ## A package of its own
 
-`web-browser` is the non-generated case: a recipe that is a real fork of an
-Alpine package, with its own patches and data files next to it. The rules that
-apply to any recipe here:
+`uflinux-files` is the non-generated case: a recipe that is a fork of upstream's
+own, with the pin and the checksums maintained here. The rules that apply to any
+recipe here:
 
 - One directory per package under `aports/apps/`, and nothing in it that is not
   listed in `$source`. abuild only warns about a stray file, so the warning is
@@ -117,12 +124,13 @@ apply to any recipe here:
   means regenerating the checksums (`abuild -F checksum`).
 - Anything that must be fetched and checksummed but not unpacked, or unpacked
   but not auto-applied, uses the `.noauto` suffix — the same convention Alpine
-  uses. See [browser.md](browser.md) for why that matters.
+  uses.
 - `arch="all"` unless the package genuinely cannot work somewhere. The build
   matrix in `scripts/ci-matrix.py` decides what is actually built for which
-  architecture, and `config/repository.json` is where that is configured; a
-  recipe's own `arch=` is the second line of defence, which is why
-  `web-browser` repeats `browser_arches` as `arch="aarch64 x86_64"`.
+  architecture, and `config/architectures.json` is where that is configured; a
+  recipe's own `arch=` is the second line of defence, and repeating the matrix
+  there is what turns one config edit into a build failure instead of a silently
+  missing package.
 - Recipe shell code has to parse under **busybox ash**, because that is the
   interpreter abuild runs (`#!/bin/ash -e`). Bashisms are the nasty class of bug
   here: `${var^^}` or `${var:0:1}` pass `sh -n` on a Debian/Ubuntu runner and then
@@ -149,7 +157,10 @@ plus the outputs the publish job needs:
   own, since GitHub ignores workflow events triggered by that token;
 - anything else - a pull request, or a push to the branch the workflow watches -
   builds `x86_64` only and does not publish;
-- `web-browser` appears only on the architectures in `browser_arches`;
+- the `packages` input of a manual run (which is how the update workflow releases
+  a bump) narrows the build to the named packages; `scoped` says that happened and
+  `expect` lists the names, so the publish job knows to carry the rest over from
+  the deployed repository and to fail if a name is in neither place;
 - `full` says which of those two cases this is, and `publish` gates on it rather
   than keeping its own copy of the rule - publishing replaces the entire
   repository, so a run that built one architecture must not deploy one
@@ -168,25 +179,29 @@ needs the key too, not only the one that publishes.
 Emulation is what makes the matrix expensive, and `build.py` handles it rather
 than the workflow: it compares the target against the runner's own `uname -m` and,
 when qemu-user is involved, sets `CARGO_BUILD_JOBS=1` so instruction translation
-stays inside the runner's memory. It also disables LTO there. That second part is
-specific to the Craft apps, whose release profile asks for thin LTO with a single
-codegen unit, which makes the final link of the biggest binary one
-single-threaded pass over the whole program - measured at over half an hour on
-native x86_64, and the phase most likely to run past a runner's time limit under
-emulation, being the one phase more jobs cannot shorten. Turning LTO off makes
-that link parallel and much shorter for a slightly larger binary, a trade worth
-making only where the alternative is that the architecture is not published at
-all; a native build gets upstream's own profile untouched.
+stays inside the runner's memory. It also disables LTO there, and on any 32-bit
+architecture. That second part is specific to the Craft apps, whose release
+profile asks for thin LTO with a single codegen unit, which makes the final link
+of the biggest binary one single-threaded pass over the whole program - measured
+at over half an hour on native x86_64, and the phase most likely to run past a
+runner's time limit under emulation, being the one phase more jobs cannot shorten.
+Turning LTO off makes that link parallel and much shorter for a slightly larger
+binary, a trade worth making only where the alternative is that the architecture
+is not published at all; a native 64-bit build gets upstream's own profile
+untouched. `uflinux-files` asks for fat LTO over eight codegen units and is
+overridden the same way, because the rule is in the build driver rather than in
+any one recipe - a recipe that wants to keep its own profile sets the variable
+itself instead of leaving it to the default.
 
-This is also why the 32-bit architectures (`x86`, `armv7`) are not built at all:
-a 32-bit `rustc` is a 32-bit process with barely 3 GiB of address space whatever
-runs it, so the same single-codegen-unit link fails with `rustc-LLVM ERROR: out
-of memory` on an x86_64 kernel as surely as under emulation - the `x86` shards
-of the bigger apps died there while the 64-bit ones passed. Disabling LTO would
-have papered over it at the cost of shipping something other than upstream's
-profile on an architecture UFLinux does not ship. (The browser reaches the same
-ceiling from the other direction on 32-bit, where ThinLTO is what makes the link
-fit in memory at all; see the LTO section of [docs/browser.md](browser.md).)
+The 32-bit architectures (`x86`, `armv7`) are not currently in
+`config/architectures.json`, and that is a separate decision from the LTO rule
+above: a 32-bit `rustc` is a 32-bit process with barely 3 GiB of address space
+whatever runs it, so the same single-codegen-unit link fails with
+`rustc-LLVM ERROR: out of memory` on an x86_64 kernel as surely as under
+emulation - the `x86` shards of the bigger apps died there while the 64-bit ones
+passed. `build.py` already disables LTO for those architectures, so re-adding one
+to the config gets the cheaper link automatically; what has to be shown first is
+that the apps fit in 3 GiB once they do.
 
 The three apps that ship a man page (`cadcraft`, `photocraft`, `soundcraft`) build
 their documentation generator as a second `cargo` run, which is upstream's own
@@ -203,6 +218,18 @@ architecture's directory is therefore self-contained, and `apk index
 only the one index. That is deliberate: a separate `noarch/` directory would work
 too, but it would make the landing page and the "Indexed for" list depend on
 whether a given package happened to have a subpackage.
+
+`publish` runs with `!cancelled()`, so a red shard no longer stops the rest of a
+release: the job collects the artifacts that did arrive and `build.py --stage
+index` fetches the deployed `APKINDEX.tar.gz` for each architecture, downloads the
+APKs it lists - keeping only entries whose origin is a recipe in this repository -
+and indexes them again beside the fresh ones. A package whose build failed
+therefore keeps the version clients already have instead of disappearing. Two
+consequences: a partial release must not *lose* a package, which is what
+`--expect-packages` is for (a scoped run fails if a name is neither built nor
+published), and the carried over APKs have to verify against the current signing
+key, so after rotating `APK_SIGNING_*` do a full release before relying on a
+partial one.
 
 ## Required repository configuration
 

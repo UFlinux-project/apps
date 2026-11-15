@@ -4,14 +4,20 @@ name: Check for upstream updates
 # the other half: the job that keeps that file pointing at the newest stable
 # upstream release. Once a day it resolves the newest release of every Craft app
 # and, if any of them moved, commits the bump (lockfile plus the recipes the
-# lockfile generates), tags it and hands the tag to build.yml, which builds
-# every package for every architecture and replaces the published repository.
-# When nothing has moved nothing is pushed, so a quiet day costs one cheap job.
+# lockfile generates), tags it and hands the tag to build.yml, which builds the
+# bumped packages and replaces the published repository. When nothing has moved
+# nothing is pushed, so a quiet day costs one cheap job.
 #
-# The browser is checked by scripts/update-browser.py in the same run, because a
-# browser bump is released exactly like a Craft bump and should not need its own
-# commit, tag and matrix run. It is not a crate, so what it follows is Alpine's
-# community/chromium recipe rather than a release feed; see docs/browser.md.
+# The release rebuilds only the packages that were bumped: build.yml takes the
+# names from the tag's dispatch input and fills the rest of the repository from
+# the deployment already online. That is only safe when every staged change
+# belongs to a bumped package, so a change to anything shared - the common
+# recipe helper, the architecture list - releases a full build instead.
+#
+# uflinux-files is checked by scripts/update-files.py in the same run, because a
+# bump of it is released exactly like a Craft bump and should not need its own
+# commit, tag and matrix run. It has no releases to resolve, so that script
+# follows the head of the upstream repository's default branch instead.
 #
 # The tag names a repository release, not an app version: the apps move
 # independently, so no single app's version describes the set. It is therefore
@@ -20,9 +26,10 @@ name: Check for upstream updates
 # what cannot collide with an earlier tag of its own.
 #
 # The release is not gated on a human, so a bump that fails to build lands on
-# main and turns the matrix run red: publication is all or nothing, so the
-# previously published repository stays in place until the bump is fixed. That
-# is the trade for an update reaching clients without anyone shepherding it.
+# main and turns the matrix run red. Publication no longer waits for every
+# shard: the packages that built are published, and a package whose shard failed
+# keeps the version already published. That is the trade for an update reaching
+# clients without anyone shepherding it.
 
 on:
   schedule:
@@ -69,21 +76,14 @@ jobs:
         run: |
           log="$RUNNER_TEMP/update.log"
           status=0
-          # The scripts print one line per package - `current`, `updated`,
-          # `deferred` or `failed` - and write their files only if everything
-          # resolved, so a nonzero exit can never have left a half-finished bump
-          # behind. Keep the log: the `updated` lines are the release notes, and
-          # the `failed` lines are the only description of what went wrong.
+          # The scripts print one line per package - `current`, `updated` or
+          # `failed` - and write their files only if everything resolved, so a
+          # nonzero exit can never have left a half-finished bump behind. Keep
+          # the log: the `updated` lines are the release notes, and the `failed`
+          # lines are the only description of what went wrong.
           python3 scripts/update-checksums.py >"$log" 2>&1 || status=$?
-          python3 scripts/update-browser.py >>"$log" 2>&1 || status=$?
+          python3 scripts/update-files.py >>"$log" 2>&1 || status=$?
           cat "$log"
-
-          # Alpine being ahead of ungoogled-chromium by a few days is the normal
-          # case, not an error: the browser script reports it and exits 0, and the
-          # next run picks the bump up.
-          if grep -q '^deferred ' "$log"; then
-            sed -n 's|^deferred *\([^ ]*\) *\(.*\)$|::notice::\1: \2|p' "$log"
-          fi
 
           if [ "$status" -ne 0 ]; then
             # One unreachable repository, one rate limit, or one release whose tag
@@ -117,6 +117,30 @@ jobs:
             exit 0
           fi
 
+          # Which packages the release should rebuild. The `updated` lines say
+          # what was bumped; a staged path that is not one of their recipes means
+          # something shared moved (the architecture list, the recipe helper this
+          # repository hand-writes), which can change a package without changing
+          # its recipe, so the whole set gets rebuilt in that case. An empty list
+          # is exactly that instruction: build.yml reads it as "every package".
+          bumped="$(sed -n 's|^updated *\([^ ]*\) .*|\1|p' "$log" | sort -u | paste -sd, -)"
+          packages="$bumped"
+          while read -r path; do
+            case "$path" in
+              config/apps.lock.json) ;;
+              aports/apps/*/APKBUILD)
+                name="${path#aports/apps/}"
+                name="${name%/APKBUILD}"
+                case ",$bumped," in
+                  *",$name,"*) ;;
+                  *) packages='' ;;
+                esac
+                ;;
+              *) packages='' ;;
+            esac
+          done < <(git diff --cached --name-only -- config aports)
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+
           # The scripts' own "updated <app> <old> -> <new> (<fields>)" lines are
           # the release notes for a repository release with no author to write
           # them, so they are kept rather than reformatted. One file becomes both
@@ -147,6 +171,7 @@ jobs:
         if: steps.bump.outputs.changed == 'true' && steps.bump.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGES: ${{ steps.bump.outputs.packages }}
         run: |
           # An authenticated remote for every write: checkout was told not to
           # persist credentials, so `origin` carries no token, and this works on
@@ -213,13 +238,23 @@ jobs:
           # a run pinned to the tag publishes exactly what was tagged even if
           # main moves again before the matrix starts. The workflow file itself
           # lives on main, which is what makes it dispatchable at all.
+          #
+          # `inputs.packages` narrows the build to the bumped packages; build.yml
+          # rebuilds everything when it is empty, which is what a change to
+          # something shared asks for.
           gh api --silent \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/dispatches" \
-            -f ref="$tag"
+            -f ref="$tag" \
+            -f "inputs[packages]=${PACKAGES}"
           {
             echo
             echo "Tagged \`$tag\` and started **Build and publish apps** for it."
             echo
+            if [ -n "$packages" ]; then
+              echo "Rebuilding: \`$(echo "$packages" | tr ',' ' ')\`. The rest of the" \
+                "repository is carried over from the current deployment."
+              echo
+            fi
             echo "Until that run publishes, clients still get the previous" \
               "repository; it replaces the whole thing on success and leaves it" \
               "alone on failure."
