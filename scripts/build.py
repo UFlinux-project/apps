@@ -64,10 +64,52 @@ ARCH32 = {"x86", "armv7"}
 # Free space a Rust release build plus an Alpine toolchain comfortably needs.
 MINIMUM_FREE_BYTES = 10 * 1024**3
 
+# Concurrent rustc processes for a native aarch64 build. See the comment in
+# stage_packages(); an explicit CARGO_BUILD_JOBS in the environment wins.
+ARM64_BUILD_JOBS = "2"
+
 
 def run(args, **kwargs):
     print("+", shlex.join(str(a) for a in args), flush=True)
     return subprocess.run([str(a) for a in args], check=True, **kwargs)
+
+
+def memory_report():
+    """One line describing the memory this build starts with.
+
+    A build that needs more than the machine's RAM and swap does not fail with a
+    message about memory: on a hosted runner it takes the whole virtual machine
+    with it, and the job reports only that the runner received a shutdown signal.
+    Printing what the build had before it starts is the cheapest way to tell that
+    kind of failure apart from a build that genuinely failed.
+    """
+    try:
+        lines = Path("/proc/meminfo").read_text().splitlines()
+    except OSError:
+        return "memory: /proc/meminfo unavailable"
+
+    def field(name):
+        for line in lines:
+            if line.startswith(name + ":"):
+                return int(line.split()[1]) * 1024
+        return 0
+
+    gib = 1024**3
+    total, available = field("MemTotal"), field("MemAvailable")
+    swap, swap_free = field("SwapTotal"), field("SwapFree")
+    limit = "none"
+    # The container's own ceiling, if it has one: what a build can actually use
+    # can be far below what the machine has.
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            value = Path(path).read_text().strip()
+        except OSError:
+            continue
+        limit = "unlimited" if value == "max" else f"{int(value) / gib:.1f} GiB"
+        break
+    return (f"memory: {total / gib:.1f} GiB total, {available / gib:.1f} GiB available, "
+            f"swap {swap / gib:.1f} GiB ({(swap - swap_free) / gib:.1f} GiB used), "
+            f"cgroup limit {limit}")
 
 
 def digest(path, algorithm="sha512"):
@@ -416,6 +458,7 @@ class Build:
             free = shutil.disk_usage(self.args.workdir).free
             if free < MINIMUM_FREE_BYTES:
                 raise RuntimeError(f"Need at least {MINIMUM_FREE_BYTES // 1024**3} GiB free, found {free // 1024**3} GiB")
+            print(memory_report(), flush=True)
 
     def unpack(self):
         marker = self.root / ".uflinux-apps-rootfs"
@@ -553,7 +596,8 @@ class Build:
             # far shorter, for a slightly larger and marginally slower binary: a
             # trade worth making where the alternative is that the architecture
             # is not published at all. A native 64-bit build gets upstream's own
-            # profile.
+            # profile, and only aarch64 gets anything overridden at all - the
+            # job count, not the profile.
             #
             # A 32-bit target needs LTO off for a second, harder reason: a
             # 32-bit rustc cannot address that link at all, however many cores
@@ -570,19 +614,52 @@ class Build:
             }
             if emulated:
                 cargo["CARGO_BUILD_JOBS"] = "1"
+            # aarch64 is native, so it keeps upstream's profile - and pays for
+            # that in memory. The ARM runner is the same 4 vCPU / 16 GB machine
+            # as the x86_64 one, but effectcraft, lightcraft and vectorcraft
+            # have now lost the runner at the same point in the build, twice,
+            # from a cold cache on a fresh VM each time. GitHub documents that a
+            # workload which exhausts RAM and swap fails exactly this way: the
+            # job ends with "the runner has received a shutdown signal" and exit
+            # code 143 instead of an OOM report, because the VM stops responding
+            # before the kernel can log one. The workflow adds a swapfile for
+            # this architecture; limiting concurrent rustc is the part that
+            # lowers the peak rather than absorbing it. Nothing about the
+            # package changes, only the time it takes, and the slowest
+            # successful aarch64 shard already runs for 49 minutes of the 350
+            # the job is allowed.
+            if self.arch == "aarch64":
+                cargo.setdefault("CARGO_BUILD_JOBS", ARM64_BUILD_JOBS)
             if jobs:
                 cargo["CARGO_BUILD_JOBS"] = jobs
-            for package in self.args.selected():
-                directory = f"cd /project/aports/apps/{package} && "
-                # qemu-user cannot elevate through a setuid binary, so resolve
-                # dependencies as root and compile unprivileged. Plain abuild
-                # still verifies that every makedepend is installed.
-                self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk"})
+            try:
+                for package in self.args.selected():
+                    directory = f"cd /project/aports/apps/{package} && "
+                    # qemu-user cannot elevate through a setuid binary, so resolve
+                    # dependencies as root and compile unprivileged. Plain abuild
+                    # still verifies that every makedepend is installed.
+                    self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk"})
+                    try:
+                        self.chroot("su", "-s", "/bin/sh", "builder", "-c", directory + "abuild",
+                                    extra_env=cargo)
+                    finally:
+                        self.chroot("sh", "-ec", directory + "abuild -F undeps", extra_env={"SUDO_APK": "apk"})
+            finally:
+                # The cache is uploaded by the Actions agent, which is neither root
+                # nor builder, and the files above are the ones the build itself
+                # created. Cargo leaves parts of the registry unreadable to anyone
+                # but their owner, tar then reports "Cannot open: Permission
+                # denied", and the whole upload is lost as a warning in the log -
+                # so the next run rebuilds from nothing and the cache costs the
+                # time it was supposed to save. Readable directories and files are
+                # all the upload needs; the chown above is what the build needs.
+                # This runs whatever the build did, because a cache from a failed
+                # build is the one that most wants to be resumed.
                 try:
-                    self.chroot("su", "-s", "/bin/sh", "builder", "-c", directory + "abuild",
-                                extra_env=cargo)
-                finally:
-                    self.chroot("sh", "-ec", directory + "abuild -F undeps", extra_env={"SUDO_APK": "apk"})
+                    self.chroot("chmod", "-R", "a+rX", "/cache/cargo", "/cache/target",
+                                "/cache/distfiles", "/cache/apk")
+                except subprocess.CalledProcessError as error:
+                    print("warning: could not make the build cache readable:", error)
             built = self.root / "home/builder/packages"
             if self.packages.exists():
                 shutil.rmtree(self.packages)

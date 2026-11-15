@@ -187,11 +187,26 @@ at over half an hour on native x86_64, and the phase most likely to run past a
 runner's time limit under emulation, being the one phase more jobs cannot shorten.
 Turning LTO off makes that link parallel and much shorter for a slightly larger
 binary, a trade worth making only where the alternative is that the architecture
-is not published at all; a native 64-bit build gets upstream's own profile
-untouched. `uflinux-files` asks for fat LTO over eight codegen units and is
-overridden the same way, because the rule is in the build driver rather than in
+is not published at all; a native 64-bit build keeps upstream's profile, with the
+one exception below. `uflinux-files` asks for fat LTO over eight codegen units and
+is overridden the same way, because the rule is in the build driver rather than in
 any one recipe - a recipe that wants to keep its own profile sets the variable
 itself instead of leaving it to the default.
+
+aarch64 is the one native 64-bit architecture where the profile is not the whole
+story. `effectcraft`, `lightcraft` and `vectorcraft` failed there by losing the
+runner rather than by failing: the log stops mid-compile with "The runner has
+received a shutdown signal" and exit code 143, at the same point, in two runs,
+from a cold cache on a fresh VM each time. GitHub documents that signature - a
+workload which exhausts RAM and swap takes the VM down before the kernel can
+record an OOM, so the job cannot tell memory pressure apart from any other way to
+lose a runner. The ARM runner is not the weaker machine (both are 4 vCPU, 16 GB
+and 14 GB of SSD), so the answer is to lower the peak rather than the binary: the
+workflow adds a swapfile on that runner, and `build.py` caps concurrent `rustc`
+at `ARM64_BUILD_JOBS` so a thin-LTO link and its neighbours do not all ask for
+memory at once. Nothing about the package changes, only how long it takes, and the
+slowest successful aarch64 shard already runs for 49 minutes of the 350 allowed.
+An explicit `CARGO_BUILD_JOBS` still wins over the cap.
 
 The 32-bit architectures (`x86`, `armv7`) are not currently in
 `config/architectures.json`, and that is a separate decision from the LTO rule

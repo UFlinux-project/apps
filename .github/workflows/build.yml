@@ -166,7 +166,11 @@ jobs:
       # against the runner's own `uname -m`, which is the same fact
       # `matrix.emulated` is derived from, and it also knows what to do about the
       # single-threaded final link that emulation makes expensive. Keeping the
-      # rule in one place is what keeps the two from disagreeing.
+      # rule in one place is what keeps the two from disagreeing - including the
+      # reduced job count for aarch64, which lives beside that rule rather than
+      # here. Setting it here would take it out of build.py's control without
+      # taking it out of the local build's: `env -i` in the chroot drops any
+      # variable build.py does not forward on purpose.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -176,6 +180,70 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y qemu-user-binfmt binfmt-support
+      # The ARM runner is the same 4 vCPU / 16 GB / 14 GB SSD machine as the
+      # x86_64 one, but a few of the bigger Rust builds lose it near the end of
+      # the compile: the log stops after the last `Compiling` line with "The
+      # runner has received a shutdown signal" and exit code 143, reproducibly,
+      # from a cold cache on a fresh VM. GitHub documents that signature - a
+      # workload that runs out of RAM and swap takes the VM down before the
+      # kernel can write an OOM record, so the job cannot tell memory pressure
+      # apart from any other way to lose a runner.
+      #
+      # So give the build somewhere to go when it runs out of memory - but not
+      # by taking the space the build itself needs. Swap is disk, and the only
+      # disk a hosted runner guarantees is the 14 GB one the build is already
+      # required to have 10 GiB of, so a swapfile sized by wishful thinking
+      # would trip build.py's own disk check and turn a failure into a
+      # certainty. The step therefore asks the machine how much it can spare and
+      # builds the file on whichever filesystem has the most room; on a runner
+      # with nothing to spare it changes nothing, which is the state the job was
+      # in before. Whether the image ships swap is not documented either way, so
+      # that is looked up too rather than assumed.
+      - name: Add swap for the ARM runner
+        if: matrix.runner == 'ubuntu-26.04-arm'
+        run: |
+          set -eu
+          # Whole GiB of swap already present. A few hundred megabytes would not
+          # survive the end of this build, so only a real amount counts.
+          have=$(( $(awk '/^SwapTotal:/{print $2}' /proc/meminfo) / 1048576 ))
+          if [ "$have" -ge 4 ]; then
+            echo "Runner already has ${have} GiB of swap; leaving it alone."
+            exit 0
+          fi
+          # The build's own minimum plus a gigabyte of margin: whatever is left
+          # after the swapfile has to satisfy the 10 GiB build.py refuses to
+          # start without, on the filesystem the build runs on, and df rounds
+          # its figures up.
+          keep=11
+          # Whichever of the two filesystems a runner offers has the most room.
+          # /mnt is the temporary disk and the workspace is where the build
+          # actually runs; on some runners they are the same filesystem, on
+          # others the temporary one is far larger, and the point of asking is
+          # that the job does not have to know which runner it got.
+          disk=$(df -BG --output=target,avail /mnt "$GITHUB_WORKSPACE" 2>/dev/null |
+                 tail -n +2 | sort -k2 -nr | head -n1 | cut -d' ' -f1)
+          [ -n "$disk" ] || disk="$GITHUB_WORKSPACE"
+          avail=$(df -BG --output=avail "$disk" | tail -n1 | tr -dc '0-9')
+          size=$(( avail < keep + 6 ? avail - keep : 6 ))
+          if [ "$size" -lt 2 ]; then
+            echo "::warning::no room for a swapfile next to the build; continuing without extra swap"
+            exit 0
+          fi
+          file="$disk/ci-swap"
+          if sudo fallocate -l "${size}GiB" "$file" 2>/dev/null ||
+             sudo dd if=/dev/zero of="$file" bs=1M count=$(( size * 1024 )) status=none; then
+            sudo chmod 600 "$file"
+            sudo mkswap "$file" >/dev/null
+            # Not fatal: a filesystem that refuses a swapfile leaves the job in
+            # the position it was in before, and a build that fits in memory
+            # anyway should not be failed by the step meant to help it.
+            sudo swapon "$file" || echo "::warning::swapon failed; continuing without extra swap"
+          else
+            sudo rm -f "$file"
+            echo "::warning::could not create a swapfile; continuing without extra swap"
+          fi
+          free -m
+          df -h "$disk"
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: cache
         with:
