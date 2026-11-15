@@ -12,7 +12,7 @@ pkgname=uflinux-files
 # from the published repository, and apk has to prefer the new file. Maintained
 # by scripts/update-files.py.
 pkgver=0.1.0
-pkgrel=4
+pkgrel=5
 pkgdesc="UFLinux file manager: GTK4 browsing, archives, mounts and search"
 url="https://github.com/UFlinux-project/uflinux3-filemanager"
 # Upstream lists the architectures it has tested; this project publishes the set
@@ -43,7 +43,7 @@ options="net"
 # Upstream has no tags and no releases, so a commit is the only addressable pin.
 # scripts/update-files.py rewrites this, pkgver, pkgrel and the checksum below
 # when the default branch moves.
-_commit="6d07b8b03e20f2ed6b3d604e633fe616719ad7fc"
+_commit="2da4176c6cefbacd05185105365d7025e5d843d6"
 # GitHub's archive of one commit replaces upstream's hand-made bundle: it
 # carries Cargo.toml, Cargo.lock, rust-toolchain.toml, crates/, data/, docs/,
 # tests/, LICENSE and README.md, and its checksum does not drift.
@@ -143,5 +143,5 @@ mount_helper() {
 # it. The file name has to match $pkgname-$pkgver.tar.gz, so a pkgver bump and a
 # checksum bump always land in the same commit.
 sha512sums="
-5a52fcaf2e4f6888b40957b92313c6b56d45c69094a330626550d2e8d99b2c6cb2618af89904f39f7bfb892c67086c656b399ffe5ab262a5597bab1d28fc3e66  uflinux-files-0.1.0.tar.gz
+e8ba0d0e282dc351e81596dfa6712376cd771ac5b5257a88f1480e14fa698106848ac24856564bc64519050c81b5c9e3933968bc7cdb20e87a572a26bb0ceb09  uflinux-files-0.1.0.tar.gz
 "
