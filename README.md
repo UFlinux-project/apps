@@ -95,6 +95,13 @@ sudo scripts/build.sh --stage index
 
 Useful details:
 
+- Native `x86_64` and `aarch64` builds of `uflinux-files` train all four
+  executables with upstream's PGO and BOLT pipeline. The build first compiles
+  the pinned `llvm22-bolt` build-tool recipe locally; it is not published as an
+  app. Training uses a headless compositor and private D-Bus sessions, and
+  checks the optimized executables before packaging. Emulated builds and other
+  architectures use the ordinary release profile. PGO builds require more time
+  and disk space than a normal build.
 - An `--arch` the host cannot execute natively needs `qemu-user-binfmt` with the
   `F` (fix-binary) flag; `build.py` refuses to start rather than fail obscurely
   later. Every architecture here is 64-bit, so native means the host's own

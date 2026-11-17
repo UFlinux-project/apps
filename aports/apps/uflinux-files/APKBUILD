@@ -12,7 +12,7 @@ pkgname=uflinux-files
 # from the published repository, and apk has to prefer the new file. Maintained
 # by scripts/update-files.py.
 pkgver=0.1.0
-pkgrel=6
+pkgrel=7
 pkgdesc="UFLinux file manager: GTK4 browsing, archives, mounts and search"
 url="https://github.com/UFlinux-project/uflinux3-filemanager"
 # Upstream lists the architectures it has tested; this project publishes the set
@@ -24,7 +24,13 @@ depends="uflinux-files-searchd=$pkgver-r$pkgrel desktop-file-utils hicolor-icon-
 # polkit action and /usr/libexec/uflinux-files-mount. The session agent that
 # answers the pkexec prompt is the one uflinux-desktop already registers.
 makedepends="cargo cargo-auditable gtk4.0-dev gtk4-layer-shell-dev glib-dev
-	gdk-pixbuf-dev shared-mime-info pkgconf"
+	gdk-pixbuf-dev shared-mime-info pkgconf dbus"
+case "$CARCH:${UFLINUX_FILES_PGO:-1}" in
+	x86_64:1|aarch64:1)
+		makedepends="$makedepends llvm22 llvm22-bolt labwc coreutils python3"
+		_pgo=true ;;
+	*) _pgo=false ;;
+esac
 subpackages="$pkgname-dbg $pkgname-doc $pkgname-searchd:searchd
 	$pkgname-desktop:desktop $pkgname-mount-helper:mount_helper"
 # The provider is its own binary so that it stays out of the file manager's
@@ -43,7 +49,7 @@ options="net"
 # Upstream has no tags and no releases, so a commit is the only addressable pin.
 # scripts/update-files.py rewrites this, pkgver, pkgrel and the checksum below
 # when the default branch moves.
-_commit="d255f99d2dd626d314ef6e8eb9c023516fb6a082"
+_commit="1609be3af807cfdaf1fb58cc9152278432d483de"
 # GitHub's archive of one commit replaces upstream's hand-made bundle: it
 # carries Cargo.toml, Cargo.lock, rust-toolchain.toml, crates/, data/, docs/,
 # tests/, LICENSE and README.md, and its checksum does not drift.
@@ -66,6 +72,10 @@ export CARGO_PROFILE_RELEASE_PANIC
 prepare() {
 	default_prepare
 	cargo fetch --locked --target="$CTARGET"
+	if $_pgo; then
+		CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_OPT_LEVEL=2 \
+			cargo install cargo-pgo --version 0.3.0 --locked --root "$srcdir/pgo-tools"
+	fi
 	# Source bundles normalize timestamps. Never reuse stale workspace binaries.
 	cargo clean -p ufm-core -p ufm-vfs -p ufm-archive -p ufm-mount -p ufm-index \
 		-p ufm-search -p ufm-desktop-ipc -p ufm-thumb -p uflinux-files-mount \
@@ -74,16 +84,34 @@ prepare() {
 		-p ufm-index -p ufm-search -p ufm-desktop-ipc -p ufm-thumb \
 		-p uflinux-files-mount -p uflinux-files -p uflinux-files-provider \
 		-p uflinux-searchd
+	if $_pgo; then
+		for binary in uflinux-files uflinux-files-provider uflinux-searchd uflinux-files-mount; do
+			cargo clean --release --target="$CTARGET" \
+				--target-dir "${CARGO_TARGET_DIR:-target}/pgo-bolt/$CTARGET/$binary" \
+				-p ufm-core -p ufm-vfs -p ufm-archive -p ufm-mount -p ufm-index \
+				-p ufm-search -p ufm-desktop-ipc -p ufm-thumb -p uflinux-files-mount \
+				-p uflinux-files -p uflinux-files-provider -p uflinux-searchd
+		done
+	fi
 }
 build() {
 	# abuild enables Rust debug info when a -dbg subpackage exists, and the
 	# workspace profile strips debuginfo itself.
 	unset CARGO_PROFILE_RELEASE_DEBUG
-	RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/usr/src/uflinux-files" \
-		cargo auditable build --workspace --release --frozen --features uflinux-files/desktop-icons
+	if $_pgo; then
+		PATH="$srcdir/pgo-tools/bin:/usr/lib/llvm22/bin:$PATH" \
+		RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/usr/src/uflinux-files" \
+			sh scripts/files-pgo-build.sh "$CTARGET"
+	else
+		RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/usr/src/uflinux-files" \
+			cargo auditable build --workspace --release --frozen --features uflinux-files/desktop-icons
+	fi
 }
 check() {
-	cargo test --workspace --frozen
+	if $_pgo; then
+		python3 tests/files-pgo-driver.py
+	fi
+	cargo test --workspace --frozen --features uflinux-files/desktop-icons
 }
 package() {
 	local target="${CARGO_TARGET_DIR:-target}/release"
@@ -143,5 +171,5 @@ mount_helper() {
 # it. The file name has to match $pkgname-$pkgver.tar.gz, so a pkgver bump and a
 # checksum bump always land in the same commit.
 sha512sums="
-9f06a92dd3d8daf9b7811de247d23877c6edc7fcf7f6da48ee4bca4ac33d66dc67417cf1c6b8d9841b1d2e400432acf32e7aebb931d26d88023f521d84c2aea3  uflinux-files-0.1.0.tar.gz
+5461fbaf91621a2ea58a5c0c12ea94b9b31e5d6ac36408477aa37f73f49dd46363620c88839a85f4a4e17ed33d081cfeb4fdd8b267095a70e71198d58aa6dbf9  uflinux-files-0.1.0.tar.gz
 "

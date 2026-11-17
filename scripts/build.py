@@ -632,13 +632,25 @@ class Build:
                 cargo.setdefault("CARGO_BUILD_JOBS", ARM64_BUILD_JOBS)
             if jobs:
                 cargo["CARGO_BUILD_JOBS"] = jobs
+            # BOLT executes instrumented binaries and requires a native worker.
+            # Build its Alpine tool package locally before resolving Files'
+            # dependencies; it is not available in the Alpine repositories.
+            cargo["UFLINUX_FILES_PGO"] = "0" if emulated else "1"
+            if "uflinux-files" in self.args.selected() and not emulated and self.arch in ("x86_64", "aarch64"):
+                directory = "cd /project/aports/build-tools/llvm22-bolt && "
+                self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk"})
+                try:
+                    self.chroot("su", "-s", "/bin/sh", "builder", "-c", directory + "abuild", extra_env=cargo)
+                    self.chroot("sh", "-ec", "apk add /home/builder/packages/build-tools/*/llvm22-bolt-*.apk")
+                finally:
+                    self.chroot("sh", "-ec", directory + "abuild -F undeps", extra_env={"SUDO_APK": "apk"})
             try:
                 for package in self.args.selected():
                     directory = f"cd /project/aports/apps/{package} && "
                     # qemu-user cannot elevate through a setuid binary, so resolve
                     # dependencies as root and compile unprivileged. Plain abuild
                     # still verifies that every makedepend is installed.
-                    self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk"})
+                    self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk", "UFLINUX_FILES_PGO": cargo["UFLINUX_FILES_PGO"]})
                     try:
                         self.chroot("su", "-s", "/bin/sh", "builder", "-c", directory + "abuild",
                                     extra_env=cargo)
@@ -660,7 +672,9 @@ class Build:
                                 "/cache/distfiles", "/cache/apk")
                 except subprocess.CalledProcessError as error:
                     print("warning: could not make the build cache readable:", error)
-            built = self.root / "home/builder/packages"
+            # Build tools live in their own abuild repository and must not be
+            # copied into the public apps repository.
+            built = self.root / "home/builder/packages/apps"
             if self.packages.exists():
                 shutil.rmtree(self.packages)
             self.packages.mkdir(parents=True, exist_ok=True)
