@@ -12,7 +12,7 @@ pkgname=uflinux-files
 # from the published repository, and apk has to prefer the new file. Maintained
 # by scripts/update-files.py.
 pkgver=0.1.0
-pkgrel=7
+pkgrel=8
 pkgdesc="UFLinux file manager: GTK4 browsing, archives, mounts and search"
 url="https://github.com/UFlinux-project/uflinux3-filemanager"
 # Upstream lists the architectures it has tested; this project publishes the set
@@ -27,7 +27,8 @@ makedepends="cargo cargo-auditable gtk4.0-dev gtk4-layer-shell-dev glib-dev
 	gdk-pixbuf-dev shared-mime-info pkgconf dbus"
 case "$CARCH:${UFLINUX_FILES_PGO:-1}" in
 	x86_64:1|aarch64:1)
-		makedepends="$makedepends llvm22 llvm22-bolt labwc coreutils python3"
+		# labwc refuses to start without an installed font, even headlessly.
+		makedepends="$makedepends llvm22 llvm22-bolt labwc font-dejavu coreutils python3"
 		_pgo=true ;;
 	*) _pgo=false ;;
 esac
