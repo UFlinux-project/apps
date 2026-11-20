@@ -133,6 +133,17 @@ package() {
 
 	# Upstream ships a complete hicolor tree keyed on the app id, so the icon
 	# matches the desktop file's Icon= on every theme that inherits hicolor.
+	#
+	# The mkdir is load-bearing, not defensive: `cp -R src dst/` copies src's
+	# *contents* into an existing dst but copies src *itself* when dst is
+	# missing, and abuild starts every package() with an empty $pkgdir. Without
+	# this line the tree is installed one level too high, as
+	# /usr/share/icons/48x48/apps/ai.storyteller.app.png, which is a path no
+	# icon theme looks at - the package still "has" its icons and the menu still
+	# shows a placeholder. Upstream's package.sh creates the directory for the
+	# same reason. hicolor-icon-theme owns the empty directory at install time,
+	# but not in $pkgdir, so nothing else here would create it.
+	mkdir -p "$pkgdir/usr/share/icons"
 	cp -R "$_craft_hicolor" "$pkgdir/usr/share/icons/"
 
 	mkdir -p "$pkgdir/usr/share/doc/$_craft_app"
