@@ -52,6 +52,20 @@ published repository and apk has to prefer the new file. Run it the same way
 (`python3 scripts/update-files.py`, or `--check`), and treat its `--check` result
 as a warning rather than a failure, exactly as above.
 
+`mission-center` is bumped by `scripts/update-mission-center.py`, also in the
+daily run and with the same `--check` convention. Upstream does have releases, so
+that script resolves GitLab's `releases/permalink/latest`, rejects a prerelease or
+a tag whose archive does not carry the matching `[package] version`, and rewrites
+`pkgver`, `pkgrel` and the four archive checksums it owns in the recipe. The three
+gitlinks are the reason it needs its own script rather than a variant of the
+Craft one: the release archive omits them, so it reads the gatherer's commit out
+of the tag's tree with a blobless `git fetch --filter=blob:none` plus
+`git ls-tree`, then the app-detection commit out of the gatherer's tree the same
+way. The nvtop snapshot the gatherer unpacks while it compiles is vendored here
+and hashed as a distfile, so the script compares the commit named by the
+gatherer's `nvtop.json` against `_nvtop_commit` and reports `failed` when they
+differ - a new nvtop pin means downloading and vendoring a new tarball by hand.
+
 ### Adding an app
 
 1. Add it to `APPS` in `scripts/gen-app-recipes.py`: the description, and any of
@@ -110,9 +124,9 @@ upstream's choice rather than ours.
 
 ## A package of its own
 
-`uflinux-files` is the non-generated case: a recipe that is a fork of upstream's
-own, with the pin and the checksums maintained here. The rules that apply to any
-recipe here:
+`uflinux-files` and `mission-center` are the non-generated cases: recipes that are
+forks of upstream's own, with the pin and the checksums maintained here. The rules
+that apply to any recipe here:
 
 - One directory per package under `aports/apps/`, and nothing in it that is not
   listed in `$source`. abuild only warns about a stray file, so the warning is
@@ -191,7 +205,13 @@ is not published at all; a native 64-bit build keeps upstream's profile, with th
 one exception below. `uflinux-files` asks for fat LTO over eight codegen units and
 is overridden the same way, because the rule is in the build driver rather than in
 any one recipe - a recipe that wants to keep its own profile sets the variable
-itself instead of leaving it to the default.
+itself instead of leaving it to the default. `mission-center` is such a recipe:
+neither of its two workspaces asks for LTO at all, so it sets no override and
+keeps upstream's `-O3`/single-codegen-unit profile on a native build, where the
+PGO pipeline passes `-C opt-level=3` anyway. It does set
+`CARGO_PROFILE_RELEASE_OPT_LEVEL=z` when the build driver tells it (through
+`MISSION_CENTER_PGO=0`) that the target cannot be executed, so an emulated build
+compiles both workspaces with `-Os`.
 
 aarch64 is the one native 64-bit architecture where the profile is not the whole
 story. `effectcraft`, `lightcraft` and `vectorcraft` failed there by losing the

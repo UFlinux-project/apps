@@ -1,0 +1,245 @@
+# Maintainer: UFlinux <pkg@uflinux.example>
+# Upstream:   https://gitlab.com/mission-center-devs/mission-center
+#
+# Mission Center is a GTK4 system monitor.  It is split in two programs: the UI
+# ("missioncenter") and a root-capable gatherer ("missioncenter-magpie", upstream
+# name "magpie", from mission-center-devs/gng).  Upstream ships both as a
+# Flatpak; this recipe builds them against the system libraries instead, so
+# nothing systemd specific is pulled in.
+#
+# Upstream's archives do not contain the two gitlinks, so they are pinned as
+# their own distfiles below, and the nvtop snapshot magpie unpacks while it
+# compiles is vendored here as a .noauto distfile to keep the build offline.
+#
+# meson drives the build, but it only wraps cargo in a custom_target.  On native
+# x86_64 and aarch64 both cargo workspaces are built with -O3 plus PGO and BOLT
+# through cargo-pgo (mission-center-pgo-build.sh and mission-center-pgo-driver.py
+# next to this file, the same mechanism as ../uflinux-files); everywhere else the
+# target cannot be executed, so they are built with -Os.
+pkgname=mission-center
+pkgver=1.2.0
+pkgrel=0
+pkgdesc="Monitor CPU, GPU, memory, network, disks, processes and sensors"
+url="https://gitlab.com/mission-center-devs/mission-center"
+arch="all"
+license="GPL-3.0-or-later"
+# magpie's Cargo.lock pins one git dependency (pop-os/upower_dbus) that has no
+# crates.io tarball, so the build cannot be fully offline.
+options="net"
+_magpie_commit="a5272b3c1d853caa4044b737cf49257bfc4c86f2"
+_rummage_commit="26b93b8c6f0de6912f0a17022f7ece76bad87612"
+_nvtop_commit="3d4a953da02bc18886734613bb9f60ff80669de7"
+source="
+	https://gitlab.com/mission-center-devs/mission-center/-/archive/v$pkgver/mission-center-v$pkgver.tar.gz
+	https://gitlab.com/mission-center-devs/gng/-/archive/$_magpie_commit/gng-$_magpie_commit.tar.gz
+	https://gitlab.com/mission-center-devs/app-detection/-/archive/$_rummage_commit/app-detection-$_rummage_commit.tar.gz
+	nvtop-$_nvtop_commit.tar.gz.noauto::https://github.com/Syllo/nvtop/archive/$_nvtop_commit.tar.gz
+	mission-center-pgo-build.sh
+	mission-center-pgo-train.sh
+	mission-center-pgo-driver.py
+"
+builddir="$srcdir/mission-center-v$pkgver"
+makedepends="
+	cargo
+	cargo-auditable
+	git
+	patch
+	pkgconf
+	python3
+	meson
+	samurai
+	cmake
+	gettext
+	itstool
+	blueprint-compiler
+	gtk4.0-dev
+	libadwaita-dev
+	glib-dev
+	mesa-dev
+	libdrm-dev
+	eudev-dev
+	dbus
+	desktop-file-utils
+"
+depends="
+	gtk4.0
+	libadwaita
+	glib
+	mesa-gbm
+	libdrm
+	eudev-libs
+	wayland-libs-egl
+	dconf
+	hicolor-icon-theme
+	shared-mime-info
+"
+# nethogs backs the per-process network view, lm-sensors the fan and temperature
+# rows, and xdg-utils the "open in browser" links.  Both programs log an error and
+# carry on when one of them is missing, so these stay recommendations.
+recommends="nethogs lm-sensors xdg-utils"
+subpackages="$pkgname-dbg"
+
+_b="$srcdir/build"
+_targets="$srcdir/target"
+# PGO and BOLT are only used when the build machine can run the target;
+# llvm22-bolt comes from ../build-tools/llvm22-bolt and scripts/build.py builds
+# it before this recipe.
+_pgo=false
+case "$CARCH:${MISSION_CENTER_PGO:-1}" in
+	x86_64:1 | aarch64:1)
+		makedepends="$makedepends llvm22 llvm22-bolt labwc font-dejavu coreutils"
+		_pgo=true
+		;;
+esac
+
+# Both workspaces' [profile.release] already ask for opt-level 3 with
+# codegen-units 1 and no LTO, so a native build needs no profile overrides at
+# all - and leaving LTO off matters here, since fat LTO over these dependency
+# trees is what the aarch64 runner has already died from elsewhere in this
+# repository.
+if ! $_pgo; then
+	# No profile can be collected there, and -O3 makes both binaries much
+	# bigger, so cross and emulated builds are size-optimised instead.  The
+	# assignment is conditional because scripts/build.py exports opt-level 3
+	# and a wide codegen-unit count of its own for an emulated build, and
+	# only the level is worth changing here.
+	: "${CARGO_PROFILE_RELEASE_OPT_LEVEL:=z}"
+	export CARGO_PROFILE_RELEASE_OPT_LEVEL
+fi
+
+prepare() {
+	default_prepare
+
+	# The GitLab archives ship every gitlink as an empty directory.  magpie is
+	# both a meson subproject and a cargo workspace of its own, and app-rummage
+	# is a path dependency inside it.
+	rm -rf "$builddir/subprojects/magpie"
+	mv "$srcdir/gng-$_magpie_commit" "$builddir/subprojects/magpie" || return 1
+	mkdir -p "$builddir/subprojects/magpie/platform-linux/crates"
+	mv "$srcdir/app-detection-$_rummage_commit" \
+		"$builddir/subprojects/magpie/platform-linux/crates/app-rummage" ||
+		return 1
+
+	# magpie's build.rs unpacks nvtop from a <commit>.tar.gz next to its build
+	# directory, or downloads it.  The driver stages this copy for it.
+	cp -f "$srcdir/nvtop-$_nvtop_commit.tar.gz.noauto" \
+		"$srcdir/$_nvtop_commit.tar.gz" || return 1
+
+	if $_pgo; then
+		CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_OPT_LEVEL=2 \
+			cargo install cargo-pgo --version 0.3.0 --locked \
+				--root "$srcdir/pgo-tools" || return 1
+	fi
+
+	cd "$builddir" || return 1
+	cargo fetch --locked --target="$CTARGET" || return 1
+	cargo fetch --locked --target="$CTARGET" --manifest-path \
+		subprojects/magpie/Cargo.toml || return 1
+}
+
+build() {
+	# Both meson trees "build" a binary by running cargo in a custom_target.  The
+	# real compilation happens below, so shadow cargo while meson configures and
+	# compiles: the targets are recorded, and their outputs are put in place by
+	# hand before the final compile copies them to where meson installs from.
+	mkdir -p "$srcdir/noop-bin" || return 1
+	printf '#!/bin/sh\nexit 0\n' >"$srcdir/noop-bin/cargo"
+	chmod 755 "$srcdir/noop-bin/cargo"
+
+	cd "$builddir" || return 1
+	PATH="$srcdir/noop-bin:$PATH" meson setup "$_b" \
+		--libdir=/usr/lib \
+		--localstatedir=/var \
+		--wrap-mode=nodownload \
+		-Dbuildtype=release \
+		-Dflatpak=false \
+		-Dprefix=/usr || return 1
+
+	# The two cargo targets copy their binary out of the way at the end, so they
+	# need something to copy even on the pass that only generates the gresource
+	# bundle, the hardware database, the desktop entry and the translations.
+	mkdir -p "$_b/src/release" "$_b/subprojects/magpie/src/release" || return 1
+	for seed in "$_b/src/release/missioncenter" \
+		"$_b/src/release/missioncenter-magpie" \
+		"$_b/subprojects/magpie/src/release/magpie"; do
+		install -m755 "$srcdir/noop-bin/cargo" "$seed" || return 1
+	done
+	PATH="$srcdir/noop-bin:$PATH" meson compile -C "$_b" || return 1
+
+	if $_pgo; then
+		# Drop the gatherer stub: the application spawns it during training, and
+		# a stub would leave it without a gatherer to talk to.  The driver is
+		# ordered gatherer-first, so MC_TRAIN_MAGPIE points at the finished
+		# instrumented and rewritten magpie, which is a throwaway copy - the app
+		# SIGKILLs its child, which never flushes a profile.
+		rm -f "$_b/src/release/missioncenter-magpie"
+		PATH="$srcdir/pgo-tools/bin:/usr/lib/llvm22/bin:$PATH" \
+		CARGO_TARGET_DIR="$_targets" \
+		RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/usr/src/$pkgname-$pkgver-r$pkgrel" \
+		MC_NVTOP_TARBALL="$srcdir/$_nvtop_commit.tar.gz" \
+		MC_TRAIN_SRCROOT="$builddir" \
+		MC_RESOURCE_DIR="$_b/resources" \
+		MC_MAGPIE_HW_DB="$_b/subprojects/magpie/platform-linux/hwdb/hw.db" \
+		MC_TRAIN_MAGPIE="$_targets/pgo-bolt/$CTARGET/magpie/$CTARGET/release/magpie-bolt-optimized" \
+			sh "$srcdir/mission-center-pgo-build.sh" "$_b" "$CTARGET" ||
+			return 1
+		install -m755 \
+			"$_targets/pgo-bolt/$CTARGET/magpie/$CTARGET/release/magpie-bolt-optimized" \
+			"$_b/subprojects/magpie/src/release/magpie" || return 1
+	else
+		cargo auditable build --release --frozen \
+			--target "$CTARGET" --target-dir "$_targets/missioncenter" ||
+			return 1
+		cargo auditable build --release --frozen \
+			--target "$CTARGET" --target-dir "$_targets/magpie" \
+			--manifest-path subprojects/magpie/Cargo.toml || return 1
+		install -m755 "$_targets/missioncenter/$CTARGET/release/missioncenter" \
+			"$_b/src/release/missioncenter" || return 1
+		install -m755 "$_targets/magpie/$CTARGET/release/magpie" \
+			"$_b/src/release/missioncenter-magpie" || return 1
+		install -m755 "$_targets/magpie/$CTARGET/release/magpie" \
+			"$_b/subprojects/magpie/src/release/magpie" || return 1
+	fi
+
+	# Now that the real binaries are in place, let the two always-stale cargo
+	# targets copy them to the paths meson installs from.
+	PATH="$srcdir/noop-bin:$PATH" meson compile -C "$_b" || return 1
+}
+
+check() {
+	if $_pgo; then
+		# Mocked end-to-end run of the driver: it checks the whole toolchain
+		# wiring in a few seconds, on any machine.
+		python3 "$srcdir"/mission-center-pgo-driver.py || return 1
+	fi
+
+	# --no-rebuild: the cargo targets are marked always-stale and would
+	# otherwise re-run the (already finished) build.
+	meson test -C "$_b" --no-rebuild --print-errorlogs || return 1
+}
+
+package() {
+	meson install -C "$_b" --no-rebuild --destdir "$pkgdir" || return 1
+
+	# Root-only helper that grants nethogs the capabilities the network view
+	# needs and installs the udev rule behind the battery history.  Mission
+	# Center runs without it; run it by hand to enable those two features.
+	install -Dm755 \
+		"$builddir/subprojects/magpie/platform-linux/bin/missioncenter-magpie-setup-linux" \
+		"$pkgdir/usr/share/missioncenter/missioncenter-magpie-setup-linux" ||
+		return 1
+	install -Dm644 "$builddir/COPYING" \
+		"$pkgdir/usr/share/licenses/$pkgname/COPYING" || return 1
+}
+
+# Written by scripts/update-mission-center.py: keep the order below, and do not
+# edit the four upstream hashes by hand.
+sha512sums="
+4e79e36a87d24785c0ffce448e8875f231d7156dfe3b61e1f7d3947c1841c41c74bd29f09baad3c356c4cb5d10d9c5a540172b5821a004738b15045fa08dd4d9  mission-center-v1.2.0.tar.gz
+4b9d6ce650e1fa6ada9c568dc9e6aa9caf53cc25afeaf3e199fecd6b2c82b4e1b05e9d721d1a3d1bf23816cd250f420d3b470852b137fb58ccb7f85ea3906ce2  gng-a5272b3c1d853caa4044b737cf49257bfc4c86f2.tar.gz
+c1c786252f588d0145f5c0799f33b98428e65ea84876223e26fd02002aedb1d96b32e396c90a90f732328e24553c8c7176c1a9a119efd2d0389107e31cc0d8ac  app-detection-26b93b8c6f0de6912f0a17022f7ece76bad87612.tar.gz
+f4f1b326b88f764d082872d50ca6f55ad269c090b14bbda29e0d61e86968f08b08e674a19f92a7622327e13d600d9a224b4fbdf6325cb3fa2f2a78c700b3d4b0  nvtop-3d4a953da02bc18886734613bb9f60ff80669de7.tar.gz.noauto
+982e244e4a6a65677365b1358b587553bef9988b0f776f4ae63d75168a80a5238b31ddeade90ba6e2f4c9c34584c79f29d180412ef92c8104bfe6b57179b7092  mission-center-pgo-build.sh
+e2ee888a5bc7cda542ab7218ac2d6636511a15bdcf11fc672809cb88711028b76c58fe394413ce13645766657db27e70f2512037874d5972e5b7c263e32c7af6  mission-center-pgo-train.sh
+69b16a054e23fa01664d9ae3f3ad1f641fe8ff1c758b9eb9afb3ebe5f56f54f2e313edcd99269d9e5a117552d100a900d28b405c736315c6cb9b7cbb9395dfdd  mission-center-pgo-driver.py
+"

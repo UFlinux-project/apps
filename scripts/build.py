@@ -41,7 +41,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 CONFIG = json.loads((PROJECT / "config/repository.json").read_text())
 ARCHES = json.loads((PROJECT / "config/architectures.json").read_text())
 APPS = json.loads((PROJECT / "config/apps.lock.json").read_text())["apps"]
-PACKAGES = sorted([*APPS, "uflinux-files"])
+PACKAGES = sorted([*APPS, "mission-center", "uflinux-files"])
 
 # Which target architectures a host can execute without emulation, keyed by the
 # `uname -m` of the host. Every architecture we build is 64-bit and its Alpine
@@ -633,10 +633,14 @@ class Build:
             if jobs:
                 cargo["CARGO_BUILD_JOBS"] = jobs
             # BOLT executes instrumented binaries and requires a native worker.
-            # Build its Alpine tool package locally before resolving Files'
-            # dependencies; it is not available in the Alpine repositories.
+            # Build its Alpine tool package locally before resolving the PGO
+            # recipes' dependencies; it is not available in the Alpine
+            # repositories, and both hand-written recipes that use it - Files
+            # and Mission Center - install it.
             cargo["UFLINUX_FILES_PGO"] = "0" if emulated else "1"
-            if "uflinux-files" in self.args.selected() and not emulated and self.arch in ("x86_64", "aarch64"):
+            cargo["MISSION_CENTER_PGO"] = "0" if emulated else "1"
+            if ({"uflinux-files", "mission-center"} & set(self.args.selected())
+                    and not emulated and self.arch in ("x86_64", "aarch64")):
                 directory = "cd /project/aports/build-tools/llvm22-bolt && "
                 self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk"})
                 try:
@@ -650,7 +654,7 @@ class Build:
                     # qemu-user cannot elevate through a setuid binary, so resolve
                     # dependencies as root and compile unprivileged. Plain abuild
                     # still verifies that every makedepend is installed.
-                    self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk", "UFLINUX_FILES_PGO": cargo["UFLINUX_FILES_PGO"]})
+                    self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk", "UFLINUX_FILES_PGO": cargo["UFLINUX_FILES_PGO"], "MISSION_CENTER_PGO": cargo["MISSION_CENTER_PGO"]})
                     try:
                         self.chroot("su", "-s", "/bin/sh", "builder", "-c", directory + "abuild",
                                     extra_env=cargo)

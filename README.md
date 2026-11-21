@@ -21,7 +21,7 @@ doas wget -qO /etc/apk/keys/uflinux3.ec384.pub "$REPO/uflinux3.ec384.pub"
 doas mkdir -p /etc/apk/repositories.d
 printf '%s\n' "$REPO" | doas tee /etc/apk/repositories.d/uflinux-apps.list >/dev/null
 doas apk update
-doas apk add photocraft uflinux-files
+doas apk add photocraft uflinux-files mission-center
 ```
 
 Packages are signed with an ECDSA key over P-384, the same keypair UFLinux itself
@@ -39,6 +39,7 @@ packages are built against, and the path the repository is published under.
 | --- | --- | --- |
 | `anicraft`, `cadcraft`, `deckcraft`, `designcraft`, `effectcraft`, `figcraft`, `filmcraft`, `lightcraft`, `materialcraft`, `pdfcraft`, `photocraft`, `soundcraft`, `texturecraft`, `vectorcraft`, `wordcraft` | [Craft apps](https://getartcraft.com/apps) | Rust, always the newest upstream release |
 | `uflinux-files` | [uflinux3-filemanager](https://github.com/UFlinux-project/uflinux3-filemanager) | Rust, GTK4 file manager; pinned to the head of upstream's default branch, since upstream has no releases |
+| `mission-center` | [mission-center](https://gitlab.com/mission-center-devs/mission-center) | Rust, GTK4 system monitor (UI plus the `missioncenter-magpie` gatherer); tracks upstream's releases |
 
 Craft Anything and ArtCraft Studio are deliberately not packaged here.
 
@@ -65,17 +66,22 @@ scripts/ci-matrix.py             the GitHub Actions matrix, from the config file
 scripts/gen-app-recipes.py       renders the Craft APKBUILDs from the lockfile
 scripts/update-checksums.py      bumps the lockfile to the newest upstream release
 scripts/update-files.py          re-pins uflinux-files to upstream's default branch
+scripts/update-mission-center.py re-pins mission-center to its newest upstream release
 scripts/collect-packages.py      turns workflow artifacts back into out/packages/<arch>/
 .github/workflows/build.yml      build every package, then publish the repository
-.github/workflows/update.yml     daily: bump the lockfile and uflinux-files, release if upstream moved
+.github/workflows/update.yml     daily: bump the lockfile and the two pinned recipes, release if upstream moved
 ```
 
 The fifteen Craft recipes are generated, not hand-written: `config/apps.lock.json`
 is the input and `scripts/gen-app-recipes.py` is the formatter. CI regenerates
 them and fails if the result differs from what is committed, so a recipe can
-never drift from the lockfile. `aports/apps/uflinux-files/APKBUILD` is the one
-hand-written recipe; it is deliberately absent from the lockfile, because the
-generator would otherwise refuse it, and its pin lives in the recipe itself.
+never drift from the lockfile. `aports/apps/uflinux-files/APKBUILD` and
+`aports/apps/mission-center/APKBUILD` are the two hand-written recipes, each
+deliberately absent from the lockfile, because the generator would otherwise
+refuse it, and each with its pin in the recipe itself and its own pinner script.
+The mission-center directory also holds the three files its PGO pipeline is made
+of - the driver shell script, the trainer and the mock-based self-test - which are
+`source` entries of the recipe rather than stray files.
 
 ## Building locally
 
@@ -95,13 +101,17 @@ sudo scripts/build.sh --stage index
 
 Useful details:
 
-- Native `x86_64` and `aarch64` builds of `uflinux-files` train all four
-  executables with upstream's PGO and BOLT pipeline. The build first compiles
+- Native `x86_64` and `aarch64` builds of `uflinux-files` and `mission-center`
+  train their executables with a PGO and BOLT pipeline. The build first compiles
   the pinned `llvm22-bolt` build-tool recipe locally; it is not published as an
   app. Training uses a headless compositor and private D-Bus sessions, and
-  checks the optimized executables before packaging. Emulated builds and other
-  architectures use the ordinary release profile. PGO builds require more time
-  and disk space than a normal build.
+  checks the optimized executables before packaging. Mission Center builds the
+  gatherer first and trains it on its own, then trains the UI, which spawns that
+  gatherer. Emulated builds and other architectures cannot run either binary, so
+  they use the ordinary release profile - `uflinux-files` upstream's, and
+  `mission-center`'s recipe swaps in `-Os` because `-O3` only makes those two
+  binaries bigger when no profile can be collected anyway. PGO builds require
+  more time and disk space than a normal build.
 - An `--arch` the host cannot execute natively needs `qemu-user-binfmt` with the
   `F` (fix-binary) flag; `build.py` refuses to start rather than fail obscurely
   later. Every architecture here is 64-bit, so native means the host's own
@@ -128,6 +138,7 @@ Useful details:
 Before pushing, the checks CI runs are all local: `python3 scripts/gen-app-recipes.py`
 (recipes must match the lockfile), `python3 scripts/update-checksums.py --check`,
 `python3 scripts/update-files.py --check`,
+`python3 scripts/update-mission-center.py --check`,
 `shellcheck` plus `busybox ash -n` on every shell file under `aports/` and
 `scripts/` - recipes, the helper they source, and the scripts a recipe installs
 alike, because abuild is `ash`, not `bash`, and a bashism only shows up as a
@@ -137,12 +148,18 @@ See [docs/adding-an-app.md](docs/adding-an-app.md) for the details.
 ## Releasing
 
 Every day, `.github/workflows/update.yml` runs `scripts/update-checksums.py` for
-the Craft apps and `scripts/update-files.py` for the file manager. Upstream has
-no releases to resolve there, so that script follows the head of
+the Craft apps, `scripts/update-files.py` for the file manager and
+`scripts/update-mission-center.py` for Mission Center. The file manager's upstream
+has no releases to resolve, so that script follows the head of
 [uflinux3-filemanager](https://github.com/UFlinux-project/uflinux3-filemanager)'s
-default branch and re-pins the recipe to it. If nothing moved, that is the end of
+default branch and re-pins the recipe to it. Mission Center does have releases, so
+its script resolves GitLab's newest stable tag, re-hashes the archive, and follows
+the two gitlinks the release archive omits - the gatherer and the app-detection
+crate - pinning each at the commit the tag names. It also refuses a bump whose
+vendored nvtop snapshot differs from the one hashed into this repository, since
+that distfile has to be replaced by hand. If nothing moved, that is the end of
 it. If anything did, the workflow commits the new lockfile, its regenerated
-recipes and the re-pinned recipe to `main`, tags the commit, and starts a release
+recipes and the re-pinned recipes to `main`, tags the commit, and starts a release
 of it - so an upstream release becomes a package here without anyone noticing it
 first.
 

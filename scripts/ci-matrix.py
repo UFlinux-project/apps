@@ -39,9 +39,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# uflinux-files is not a Craft app and is not version-locked in apps.lock.json:
-# its pin lives in its own recipe, which dependency_digest() already hashes.
-EXTRA_PACKAGES = ["uflinux-files"]
+# uflinux-files and mission-center are not Craft apps and are not version-locked
+# in apps.lock.json: their pins live in their own recipes, which
+# dependency_digest() already hashes.
+EXTRA_PACKAGES = ["mission-center", "uflinux-files"]
 
 
 def package_names(apps):

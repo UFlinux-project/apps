@@ -14,10 +14,13 @@ name: Check for upstream updates
 # belongs to a bumped package, so a change to anything shared - the common
 # recipe helper, the architecture list - releases a full build instead.
 #
-# uflinux-files is checked by scripts/update-files.py in the same run, because a
-# bump of it is released exactly like a Craft bump and should not need its own
-# commit, tag and matrix run. It has no releases to resolve, so that script
-# follows the head of the upstream repository's default branch instead.
+# uflinux-files and mission-center are checked by scripts/update-files.py and
+# scripts/update-mission-center.py in the same run, because a bump of either is
+# released exactly like a Craft bump and should not need its own commit, tag and
+# matrix run. The two scripts differ only in what they resolve against:
+# uflinux-files has no releases, so its script follows the head of the upstream
+# repository's default branch, while mission-center does have tagged releases on
+# GitLab, so its script resolves the newest stable one from those.
 #
 # The tag names a repository release, not an app version: the apps move
 # independently, so no single app's version describes the set. It is therefore
@@ -83,6 +86,7 @@ jobs:
           # lines are the only description of what went wrong.
           python3 scripts/update-checksums.py >"$log" 2>&1 || status=$?
           python3 scripts/update-files.py >>"$log" 2>&1 || status=$?
+          python3 scripts/update-mission-center.py >>"$log" 2>&1 || status=$?
           cat "$log"
 
           if [ "$status" -ne 0 ]; then

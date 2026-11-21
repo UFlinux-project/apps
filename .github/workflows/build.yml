@@ -120,6 +120,12 @@ jobs:
         # the daily update job is meant to act on it.
         run: python3 scripts/update-files.py --check ||
           echo "::warning::uflinux-files is behind upstream's default branch, run scripts/update-files.py"
+      - name: Check that mission-center tracks upstream
+        # Same rule again: mission-center does have tagged releases, but being
+        # behind the newest one is equally normal here and only the daily update
+        # job is meant to act on it.
+        run: python3 scripts/update-mission-center.py --check ||
+          echo "::warning::mission-center is behind upstream's newest release, run scripts/update-mission-center.py"
       - id: matrix
         env:
           EVENT: ${{ github.event_name }}
