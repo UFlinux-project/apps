@@ -10,6 +10,10 @@
 # Upstream's archives do not contain the two gitlinks, so they are pinned as
 # their own distfiles below, and the nvtop snapshot magpie unpacks while it
 # compiles is vendored here as a .noauto distfile to keep the build offline.
+# It comes from https://github.com/Syllo/nvtop/archive/$_nvtop_commit.tar.gz,
+# but is listed without that URL: abuild only matches files sitting next to this
+# file against non-remote $source entries, and the .noauto extension is what
+# keeps it out of the unpack phase.
 #
 # meson drives the build, but it only wraps cargo in a custom_target.  On native
 # x86_64 and aarch64 both cargo workspaces are built with -O3 plus PGO and BOLT
@@ -33,7 +37,7 @@ source="
 	https://gitlab.com/mission-center-devs/mission-center/-/archive/v$pkgver/mission-center-v$pkgver.tar.gz
 	https://gitlab.com/mission-center-devs/gng/-/archive/$_magpie_commit/gng-$_magpie_commit.tar.gz
 	https://gitlab.com/mission-center-devs/app-detection/-/archive/$_rummage_commit/app-detection-$_rummage_commit.tar.gz
-	nvtop-$_nvtop_commit.tar.gz.noauto::https://github.com/Syllo/nvtop/archive/$_nvtop_commit.tar.gz
+	nvtop-$_nvtop_commit.tar.gz.noauto
 	mission-center-pgo-build.sh
 	mission-center-pgo-train.sh
 	mission-center-pgo-driver.py
@@ -112,9 +116,12 @@ prepare() {
 
 	# The GitLab archives ship every gitlink as an empty directory.  magpie is
 	# both a meson subproject and a cargo workspace of its own, and app-rummage
-	# is a path dependency inside it.
+	# is a path dependency inside it, so gng's archive has an empty
+	# platform-linux/crates/app-rummage too.  mv would move the extracted tree
+	# *into* it rather than over it, so both placeholders are removed first.
 	rm -rf "$builddir/subprojects/magpie"
 	mv "$srcdir/gng-$_magpie_commit" "$builddir/subprojects/magpie" || return 1
+	rm -rf "$builddir/subprojects/magpie/platform-linux/crates/app-rummage"
 	mkdir -p "$builddir/subprojects/magpie/platform-linux/crates"
 	mv "$srcdir/app-detection-$_rummage_commit" \
 		"$builddir/subprojects/magpie/platform-linux/crates/app-rummage" ||

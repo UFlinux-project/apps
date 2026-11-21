@@ -138,7 +138,11 @@ that apply to any recipe here:
   means regenerating the checksums (`abuild -F checksum`).
 - Anything that must be fetched and checksummed but not unpacked, or unpacked
   but not auto-applied, uses the `.noauto` suffix — the same convention Alpine
-  uses.
+  uses. A distfile that is committed to this repository belongs in `$source` as
+  a plain name, not `name::https://…`: abuild skips the "file next to the
+  APKBUILD" check for every remote entry, so a `::` URL turns the file into a
+  stray-file warning even though it is listed. Keep the upstream URL as a
+  comment instead.
 - `arch="all"` unless the package genuinely cannot work somewhere. The build
   matrix in `scripts/ci-matrix.py` decides what is actually built for which
   architecture, and `config/architectures.json` is where that is configured; a
