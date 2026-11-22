@@ -68,6 +68,16 @@ MINIMUM_FREE_BYTES = 10 * 1024**3
 # stage_packages(); an explicit CARGO_BUILD_JOBS in the environment wins.
 ARM64_BUILD_JOBS = "2"
 
+# Codegen units for a native aarch64 build. aarch64 keeps upstream's thin LTO and
+# only gets the link split up. See the comment in stage_packages().
+ARM64_CODEGEN_UNITS = "16"
+
+# Codegen units for an emulated (or 32-bit) build, where LTO is off anyway.
+# Higher than aarch64's because an emulated shard is fighting the step's
+# wall-clock limit rather than the runner's memory. See the comment in
+# stage_packages().
+EMULATED_CODEGEN_UNITS = "64"
+
 
 def run(args, **kwargs):
     print("+", shlex.join(str(a) for a in args), flush=True)
@@ -582,22 +592,35 @@ class Build:
                        f'PACKAGER_PRIVKEY="{self.env["PACKAGER_PRIVKEY"]}"\n'
                        f'PACKAGER_PUBKEY="/var/lib/uflinux-apps/keys/{self.key}"\n')
             jobs = os.environ.get("CARGO_BUILD_JOBS", "")
-            # Two independent reasons to override the release profile, and the
-            # Craft profiles ask for thin LTO with a single codegen unit, so the
+            # The Craft profiles ask for LTO with a single codegen unit, so the
             # last link of the biggest binary is one single-threaded pass over
-            # the whole program.
+            # the whole program. That pass is the only build phase that has ever
+            # killed a shard here, and it kills them two different ways, which is
+            # why both of the overrides below raise the codegen unit count and
+            # why they are decided separately.
             #
-            # Under qemu-user, the compile job count and that link are the two
-            # places where an emulated build stops being a merely slower native
-            # one. One job keeps instruction translation inside the runner's
-            # memory, and the link is measured at over half an hour natively -
-            # the phase most likely to run past the runner's time limit, and the
-            # one `jobs` cannot shorten. Turning LTO off makes it parallel and
-            # far shorter, for a slightly larger and marginally slower binary: a
-            # trade worth making where the alternative is that the architecture
-            # is not published at all. A native 64-bit build gets upstream's own
-            # profile, and only aarch64 gets anything overridden at all - the
-            # job count, not the profile.
+            #   exit 143 with "the runner has received a shutdown signal" - the
+            #   VM ran out of RAM and swap and stopped responding before the
+            #   kernel could log an OOM. This is a native-shard failure, seen on
+            #   aarch64.
+            #
+            #   exit 137 at exactly the step's `timeout` plus its --kill-after,
+            #   with gigabytes still free. That SIGKILL is the timeout, not the
+            #   OOM killer, so 137 on its own says nothing about memory. This is
+            #   an emulated-shard failure, seen on ppc64le.
+            #
+            # Splitting the link is the one change that helps against both, and
+            # it is the one thing `jobs` cannot do: the job count bounds the
+            # compile phase, but a single codegen unit leaves the link as one
+            # process no matter how many cores are idle.
+            #
+            # Under qemu-user the shard is fighting the step's wall-clock limit,
+            # so it gets LTO off entirely and codegen units high enough that the
+            # link is not the tail: vectorcraft spent the whole 330 minutes of
+            # the step inside that link on a cold cache, and photocraft is
+            # already at 328. One job keeps instruction translation inside the
+            # runner's memory. A native 64-bit build gets upstream's own profile,
+            # and only aarch64 gets anything overridden at all.
             #
             # A 32-bit target needs LTO off for a second, harder reason: a
             # 32-bit rustc cannot address that link at all, however many cores
@@ -610,26 +633,30 @@ class Build:
             emulated = self.arch not in NATIVE.get(platform.machine(), set())
             cargo = {} if not (emulated or self.arch in ARCH32) else {
                 "CARGO_PROFILE_RELEASE_LTO": "false",
-                "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "16",
+                "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": EMULATED_CODEGEN_UNITS,
             }
             if emulated:
                 cargo["CARGO_BUILD_JOBS"] = "1"
-            # aarch64 is native, so it keeps upstream's profile - and pays for
+            # aarch64 is native, so it keeps upstream's thin LTO - and pays for
             # that in memory. The ARM runner is the same 4 vCPU / 16 GB machine
-            # as the x86_64 one, but effectcraft, lightcraft and vectorcraft
-            # have now lost the runner at the same point in the build, twice,
-            # from a cold cache on a fresh VM each time. GitHub documents that a
-            # workload which exhausts RAM and swap fails exactly this way: the
-            # job ends with "the runner has received a shutdown signal" and exit
-            # code 143 instead of an OOM report, because the VM stops responding
-            # before the kernel can log one. The workflow adds a swapfile for
-            # this architecture; limiting concurrent rustc is the part that
-            # lowers the peak rather than absorbing it. Nothing about the
-            # package changes, only the time it takes, and the slowest
-            # successful aarch64 shard already runs for 49 minutes of the 350
-            # the job is allowed.
+            # as the x86_64 one, but effectcraft, lightcraft and vectorcraft have
+            # now lost the runner at the same point in the build, repeatedly,
+            # from a cold cache on a fresh VM each time, always during that
+            # final link. The workflow adds a swapfile for this architecture,
+            # which absorbs the peak; the two overrides here lower it. Splitting
+            # the link lets several thin-LTO backends finish and link parts at
+            # once instead of holding the whole program in one linker, and
+            # capping the job count bounds the compile phase that feeds it.
+            #
+            # Thin LTO stays on: it is what the profile asks for, it is far
+            # cheaper in memory than fat LTO, and the headroom is in the link
+            # rather than in the optimisation. Nothing about the package changes
+            # except the time it takes, and the slowest successful aarch64 shard
+            # runs for 52 minutes of the 350 the job is allowed.
             if self.arch == "aarch64":
                 cargo.setdefault("CARGO_BUILD_JOBS", ARM64_BUILD_JOBS)
+                cargo.setdefault("CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+                                 ARM64_CODEGEN_UNITS)
             if jobs:
                 cargo["CARGO_BUILD_JOBS"] = jobs
             # BOLT executes instrumented binaries and requires a native worker.

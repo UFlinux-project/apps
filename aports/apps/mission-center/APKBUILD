@@ -97,10 +97,12 @@ case "$CARCH:${MISSION_CENTER_PGO:-1}" in
 esac
 
 # Both workspaces' [profile.release] already ask for opt-level 3 with
-# codegen-units 1 and no LTO, so a native build needs no profile overrides at
-# all - and leaving LTO off matters here, since fat LTO over these dependency
-# trees is what the aarch64 runner has already died from elsewhere in this
-# repository.
+# codegen-units 1 and no LTO, so this recipe overrides nothing for a native
+# build - and leaving LTO alone matters here, since fat LTO over these
+# dependency trees is what the aarch64 runner has already died from elsewhere in
+# this repository.  scripts/build.py does widen codegen-units on that
+# architecture, which reaches these workspaces through the environment; that is
+# the split link, not a change of optimisation.
 if ! $_pgo; then
 	# No profile can be collected there, and -O3 makes both binaries much
 	# bigger, so cross and emulated builds are size-optimised instead.  The
@@ -196,12 +198,21 @@ build() {
 	else
 		# main.rs includes $BUILD_ROOT/src/config.rs, the file meson's
 		# configure_file wrote into $_b.  Upstream's cargo invocation gets it
-		# from src/meson.build; here the recipe runs cargo itself.
-		export BUILD_ROOT="$_b"
-		cargo auditable build --release --frozen \
+		# from src/meson.build; here the recipe runs cargo itself, so it has to
+		# supply the variable.
+		#
+		# Pass it per invocation rather than exporting it: BUILD_ROOT is abuild's
+		# own variable, the path rootbld() made when it set up a chroot.  build()
+		# runs inside the abuild process, so an export survives into cleanup(),
+		# which reads a non-empty BUILD_ROOT as "I am in a rootbld chroot" and
+		# hands the meson build directory to abuild-rmtemp.  That ends the build
+		# with a setuid error after the packages are already written, and the
+		# helper would reject the path anyway - it only accepts
+		# /var/tmp/abuild.XXXXXXXX.
+		BUILD_ROOT="$_b" cargo auditable build --release --frozen \
 			--target "$CTARGET" --target-dir "$_targets/missioncenter" ||
 			return 1
-		cargo auditable build --release --frozen \
+		BUILD_ROOT="$_b" cargo auditable build --release --frozen \
 			--target "$CTARGET" --target-dir "$_targets/magpie" \
 			--manifest-path subprojects/magpie/Cargo.toml || return 1
 		install -m755 "$_targets/missioncenter/$CTARGET/release/missioncenter" \

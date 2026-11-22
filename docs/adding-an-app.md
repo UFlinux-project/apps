@@ -198,21 +198,26 @@ Emulation is what makes the matrix expensive, and `build.py` handles it rather
 than the workflow: it compares the target against the runner's own `uname -m` and,
 when qemu-user is involved, sets `CARGO_BUILD_JOBS=1` so instruction translation
 stays inside the runner's memory. It also disables LTO there, and on any 32-bit
-architecture. That second part is specific to the Craft apps, whose release
-profile asks for thin LTO with a single codegen unit, which makes the final link
-of the biggest binary one single-threaded pass over the whole program - measured
-at over half an hour on native x86_64, and the phase most likely to run past a
-runner's time limit under emulation, being the one phase more jobs cannot shorten.
-Turning LTO off makes that link parallel and much shorter for a slightly larger
-binary, a trade worth making only where the alternative is that the architecture
-is not published at all; a native 64-bit build keeps upstream's profile, with the
-one exception below. `uflinux-files` asks for fat LTO over eight codegen units and
+architecture, and raises the codegen unit count to `EMULATED_CODEGEN_UNITS`. That
+second part is specific to the Craft apps, whose release profile asks for thin LTO
+with a single codegen unit, which makes the final link of the biggest binary one
+single-threaded pass over the whole program - measured at over half an hour on
+native x86_64, and the phase most likely to run past a runner's time limit under
+emulation, being the one phase more jobs cannot shorten: `vectorcraft` on ppc64le
+spent the entire 330 minutes of the build step inside that link on a cold cache,
+with gigabytes of memory still free. Turning LTO off makes the link parallel, and
+more codegen units split it further, for a slightly larger binary - a trade worth
+making only where the alternative is that the architecture is not published at
+all; a native 64-bit build keeps upstream's profile, with the one exception below.
+`uflinux-files` asks for fat LTO over eight codegen units and
 is overridden the same way, because the rule is in the build driver rather than in
 any one recipe - a recipe that wants to keep its own profile sets the variable
 itself instead of leaving it to the default. `mission-center` is such a recipe:
 neither of its two workspaces asks for LTO at all, so it sets no override and
 keeps upstream's `-O3`/single-codegen-unit profile on a native build, where the
-PGO pipeline passes `-C opt-level=3` anyway. It does set
+PGO pipeline passes `-C opt-level=3` anyway (on aarch64 the driver's codegen-unit
+override below reaches it too, since it is an environment variable rather than a
+recipe setting). It does set
 `CARGO_PROFILE_RELEASE_OPT_LEVEL=z` when the build driver tells it (through
 `MISSION_CENTER_PGO=0`) that the target cannot be executed, so an emulated build
 compiles both workspaces with `-Os`.
@@ -220,17 +225,26 @@ compiles both workspaces with `-Os`.
 aarch64 is the one native 64-bit architecture where the profile is not the whole
 story. `effectcraft`, `lightcraft` and `vectorcraft` failed there by losing the
 runner rather than by failing: the log stops mid-compile with "The runner has
-received a shutdown signal" and exit code 143, at the same point, in two runs,
-from a cold cache on a fresh VM each time. GitHub documents that signature - a
-workload which exhausts RAM and swap takes the VM down before the kernel can
-record an OOM, so the job cannot tell memory pressure apart from any other way to
-lose a runner. The ARM runner is not the weaker machine (both are 4 vCPU, 16 GB
-and 14 GB of SSD), so the answer is to lower the peak rather than the binary: the
-workflow adds a swapfile on that runner, and `build.py` caps concurrent `rustc`
-at `ARM64_BUILD_JOBS` so a thin-LTO link and its neighbours do not all ask for
-memory at once. Nothing about the package changes, only how long it takes, and the
-slowest successful aarch64 shard already runs for 49 minutes of the 350 allowed.
-An explicit `CARGO_BUILD_JOBS` still wins over the cap.
+received a shutdown signal" and exit code 143, at the same point, repeatedly,
+from a cold cache on a fresh VM each time, always during that final link. GitHub
+documents that signature - a workload which exhausts RAM and swap takes the VM
+down before the kernel can record an OOM, so the job cannot tell memory pressure
+apart from any other way to lose a runner. It is worth learning the other two
+signatures while reading a shard's last line, because they call for the opposite
+fixes: exit 137 at exactly the build step's `timeout` plus its `--kill-after` is
+that timeout's SIGKILL rather than the OOM killer, and says nothing at all about
+memory; and exit 1 immediately after `>>> Build complete` is a recipe or cleanup
+failure, not a resource one. The ARM runner is not the weaker machine (both are 4
+vCPU, 16 GB and 14 GB of SSD), so the answer is to lower the peak rather than the
+binary: the workflow adds a swapfile on that runner, and `build.py` caps
+concurrent `rustc` at `ARM64_BUILD_JOBS` so a thin-LTO link and its neighbours do
+not all ask for memory at once, while `ARM64_CODEGEN_UNITS` splits the link into
+several backends instead of one linker holding the whole program. Thin LTO itself
+is left alone - it is what the profile asks for, it is far cheaper than fat LTO,
+and the headroom is in the link rather than in the optimisation. Nothing about the
+package changes, only how long it takes, and the slowest successful aarch64 shard
+runs for 52 minutes of the 350 allowed. An explicit `CARGO_BUILD_JOBS` still wins
+over the cap.
 
 The 32-bit architectures (`x86`, `armv7`) are not currently in
 `config/architectures.json`, and that is a separate decision from the LTO rule
@@ -241,6 +255,18 @@ emulation - the `x86` shards of the bigger apps died there while the 64-bit ones
 passed. `build.py` already disables LTO for those architectures, so re-adding one
 to the config gets the cheaper link automatically; what has to be shown first is
 that the apps fit in 3 GiB once they do.
+
+A recipe that runs `cargo` itself instead of leaving it to meson has to know that
+`BUILD_ROOT` is abuild's own variable: it holds the directory `rootbld()` created
+when abuild set up a chroot, and `cleanup()` treats a non-empty value as "clean up
+this build chroot" at the end of every run. `build()` is a function inside the
+abuild process, so an `export BUILD_ROOT=…` there survives into that cleanup and
+the run ends with `abuild-rmtemp: setuid(0) failed` after the packages were
+already written - and the helper would reject the path regardless, since it only
+accepts `/var/tmp/abuild.XXXXXXXX`. `mission-center` therefore assigns the
+variable to its two `cargo` invocations rather than exporting it; its PGO helper
+script does export it, safely, because a script is a child process and the value
+dies with it.
 
 The three apps that ship a man page (`cadcraft`, `photocraft`, `soundcraft`) build
 their documentation generator as a second `cargo` run, which is upstream's own

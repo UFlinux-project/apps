@@ -42,6 +42,11 @@ if [ ! -f "$out/src/config.rs" ]; then
     echo "no meson-generated config.rs in $out/src: run meson compile first" >&2
     exit 2
 fi
+# Exporting is right here and wrong in the recipe.  The recipe's build() runs
+# inside the abuild process, where a leaked BUILD_ROOT is read by cleanup() as
+# "clean up this rootbld chroot"; this script is a child of that process, so the
+# export dies with it.  It has to stay an export rather than a per-command
+# assignment: pgo-driver.py reads the variable from its own environment.
 export BUILD_ROOT="$out"
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 train=${MC_PGO_TRAIN:-$here/mission-center-pgo-train.sh}

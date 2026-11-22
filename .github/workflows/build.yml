@@ -263,6 +263,17 @@ jobs:
             sudo --preserve-env=SOURCE_DATE_EPOCH,CARGO_BUILD_JOBS,APK_SIGNING_PRIVATE_KEY,APK_SIGNING_PUBLIC_KEY \
             python3 scripts/build.py --arch '${{ matrix.arch }}' \
               --package '${{ matrix.package }}' --stage packages
+      - name: Make the cache readable
+        # build.py widens the cache permissions on the way out so the upload
+        # below can read what root wrote.  A shard killed by the step timeout
+        # never gets there, and actions/cache/save then fails on tar "Permission
+        # denied" - which loses the whole cache and leaves the retry to rebuild
+        # from cold, the situation that puts an emulated shard past its time
+        # limit in the first place.  Same repair, from the host, unconditionally.
+        if: always()
+        run: |
+          dir=.cache/build/${{ matrix.arch }}
+          if [ -d "$dir" ]; then sudo chmod -R a+rX "$dir"; fi
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: always()
         with:
