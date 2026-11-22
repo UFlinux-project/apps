@@ -37,7 +37,7 @@ packages are built against, and the path the repository is published under.
 
 | Package | Upstream | Notes |
 | --- | --- | --- |
-| `anicraft`, `cadcraft`, `deckcraft`, `designcraft`, `effectcraft`, `figcraft`, `filmcraft`, `lightcraft`, `materialcraft`, `pdfcraft`, `photocraft`, `soundcraft`, `texturecraft`, `vectorcraft`, `wordcraft` | [Craft apps](https://getartcraft.com/apps) | Rust, always the newest upstream release |
+| `anicraft`, `cadcraft`, `deckcraft`, `designcraft`, `figcraft`, `filmcraft`, `lightcraft`, `materialcraft`, `pdfcraft`, `photocraft`, `soundcraft`, `texturecraft`, `vectorcraft`, `wordcraft` | [Craft apps](https://getartcraft.com/apps) | Rust, always the newest upstream release |
 | `uflinux-files` | [uflinux3-filemanager](https://github.com/UFlinux-project/uflinux3-filemanager) | Rust, GTK4 file manager; pinned to the head of upstream's default branch, since upstream has no releases |
 | `mission-center` | [mission-center](https://gitlab.com/mission-center-devs/mission-center) | Rust, GTK4 system monitor (UI plus the `missioncenter-magpie` gatherer); tracks upstream's releases |
 
@@ -55,7 +55,7 @@ the base system already provides instead of carrying its own copies.
 
 ```
 aports/apps/<pkgname>/APKBUILD   one recipe per package (+ patches and data files)
-aports/apps/craft-common.sh      shared phases for the fifteen Craft recipes
+aports/apps/craft-common.sh      shared phases for the fourteen Craft recipes
 aports/.shellcheckrc             shellcheck knobs for sourced recipes (no shebang)
 config/architectures.json        architecture -> runner, qemu-user, qemu machine
 config/repository.json           Alpine version, rootfs locks, publish path, signing key
@@ -63,6 +63,7 @@ config/apps.lock.json            upstream tag, tarball hash and metadata per Cra
 scripts/build.py                 the build driver: chroot, abuild, index, Pages payload
 scripts/build.sh                 thin wrapper so `sh scripts/build.sh` works
 scripts/ci-matrix.py             the GitHub Actions matrix, from the config files
+scripts/check-distfiles.py       verify a recipe's shipped files against its sha512sums
 scripts/gen-app-recipes.py       renders the Craft APKBUILDs from the lockfile
 scripts/update-checksums.py      bumps the lockfile to the newest upstream release
 scripts/update-files.py          re-pins uflinux-files to upstream's default branch
@@ -72,7 +73,7 @@ scripts/collect-packages.py      turns workflow artifacts back into out/packages
 .github/workflows/update.yml     daily: bump the lockfile and the two pinned recipes, release if upstream moved
 ```
 
-The fifteen Craft recipes are generated, not hand-written: `config/apps.lock.json`
+The fourteen Craft recipes are generated, not hand-written: `config/apps.lock.json`
 is the input and `scripts/gen-app-recipes.py` is the formatter. CI regenerates
 them and fails if the result differs from what is committed, so a recipe can
 never drift from the lockfile. `aports/apps/uflinux-files/APKBUILD` and
@@ -164,7 +165,7 @@ of it - so an upstream release becomes a package here without anyone noticing it
 first.
 
 Tags are dates, not versions: `v<year>.<month>.<number-in-month>`. No single
-number describes fifteen apps, and the build workflow only requires a tag that
+number describes fourteen apps, and the build workflow only requires a tag that
 looks like `v<major>.<minor>.<patch>`, which that satisfies. Pushing such a tag
 by hand releases whatever it points at, so a hand-made tag is still the way to
 rebuild an existing set of versions. The weekly schedule and a manual run build

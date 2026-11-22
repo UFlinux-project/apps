@@ -1,13 +1,13 @@
 # Adding or updating a package
 
-## The fifteen Craft apps
+## The fourteen Craft apps
 
 Their recipes are generated. `scripts/gen-app-recipes.py` holds the per-app
 deltas (description, extra `-dev` packages, optional cargo features, whether
 upstream ships a man page) and `config/apps.lock.json` holds the version, the
 tarball hash and the binary names. The common phases live in
 `aports/apps/craft-common.sh`, which each recipe sources, so a change to how
-Craft apps are built is a one-line change for all fifteen.
+Craft apps are built is a one-line change for all fourteen.
 
 ### Bumping a version
 
@@ -106,8 +106,8 @@ which turns the interface catalogs in. We build without either, so our packages
 use the fallback fonts and are English-only.
 
 This is a considered trade, not an oversight. `craft-fonts` has no releases, so
-it can only be pinned by commit, and the pin differs per app: the fifteen apps
-presently name five different revisions, each a 29-39 MB tarball, which would
+it can only be pinned by commit, and the pin differs per app: the Craft apps
+presently name several different revisions, each a 29-39 MB tarball, which would
 have to be vendored, hashed and bumped separately for every application. Worse,
 the pins are not self-consistent - several of them predate the Latin catalog
 entirely and contain no `Inter-Regular.ttf` at all, so honoring them literally
@@ -135,7 +135,12 @@ that apply to any recipe here:
   is fine — those are on abuild's allow-list.
 - `sha512sums` is positional and matches `$source` entry by entry. The name
   abuild hashes is the left-hand side of `::`, so renaming a `source` entry
-  means regenerating the checksums (`abuild -F checksum`).
+  means regenerating the checksums (`abuild -F checksum`). Editing a file the
+  recipe ships rather than downloads invalidates its sum too, and abuild only
+  notices after it has resolved every dependency and started the build, so the
+  shard fails some minutes in, once per architecture. `checks` runs
+  `scripts/check-distfiles.py`, which hashes those files without building
+  anything.
 - Anything that must be fetched and checksummed but not unpacked, or unpacked
   but not auto-applied, uses the `.noauto` suffix — the same convention Alpine
   uses. A distfile that is committed to this repository belongs in `$source` as
@@ -223,9 +228,9 @@ recipe setting). It does set
 compiles both workspaces with `-Os`.
 
 aarch64 is the one native 64-bit architecture where the profile is not the whole
-story. `effectcraft`, `lightcraft` and `vectorcraft` failed there by losing the
-runner rather than by failing: the log stops mid-compile with "The runner has
-received a shutdown signal" and exit code 143, at the same point, repeatedly,
+story. `lightcraft` and `vectorcraft` failed there by losing the runner rather
+than by failing: the log stops mid-compile with "The runner has received a
+shutdown signal" and exit code 143, at the same point, repeatedly,
 from a cold cache on a fresh VM each time, always during that final link. GitHub
 documents that signature - a workload which exhausts RAM and swap takes the VM
 down before the kernel can record an OOM, so the job cannot tell memory pressure

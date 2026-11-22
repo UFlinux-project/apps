@@ -4,7 +4,7 @@
 For every Craft app this resolves the newest non-prerelease upstream release,
 downloads the source tarball, hashes it and stores the result. The lockfile is
 the only place a version number lives; scripts/gen-app-recipes.py turns it into
-the 15 APKBUILDs, so a bump is:
+the Craft APKBUILDs, so a bump is:
 
     sudo -u builder python3 scripts/update-checksums.py   # or --check in CI
 

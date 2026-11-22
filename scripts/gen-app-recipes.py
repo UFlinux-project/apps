@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate aports/apps/<app>/APKBUILD for every Craft app.
 
-The 15 recipes differ only in version, checksum, description and a handful of
+The recipes differ only in version, checksum, description and a handful of
 native dependencies, so they are generated from one table plus config/apps.lock.json
 (which scripts/update-checksums.py refreshes from the GitHub API). A version bump is
 therefore: update the lockfile, run this script, commit the diff.
@@ -52,10 +52,6 @@ APPS = {
     },
     "designcraft": {
         "desc": "Lay out magazines, books and print documents",
-    },
-    "effectcraft": {
-        "desc": "Motion graphics and visual effects compositor",
-        "mk": DEP_ALSA,
     },
     "figcraft": {
         "desc": "Design and prototype user interfaces",

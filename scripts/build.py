@@ -639,9 +639,9 @@ class Build:
                 cargo["CARGO_BUILD_JOBS"] = "1"
             # aarch64 is native, so it keeps upstream's thin LTO - and pays for
             # that in memory. The ARM runner is the same 4 vCPU / 16 GB machine
-            # as the x86_64 one, but effectcraft, lightcraft and vectorcraft have
-            # now lost the runner at the same point in the build, repeatedly,
-            # from a cold cache on a fresh VM each time, always during that
+            # as the x86_64 one, but lightcraft and vectorcraft have now lost
+            # the runner at the same point in the build, repeatedly, from a
+            # cold cache on a fresh VM each time, always during that
             # final link. The workflow adds a swapfile for this architecture,
             # which absorbs the peak; the two overrides here lower it. Splitting
             # the link lets several thin-LTO backends finish and link parts at

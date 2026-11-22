@@ -98,20 +98,24 @@ jobs:
           python3 scripts/gen-app-recipes.py
           # git status, not git diff: adding an app to the lockfile without
           # committing its new recipe produces an untracked file, which a diff
-          # does not see, and the failure would otherwise surface 107 times as
-          # "APKBUILD: No such file or directory".
+          # does not see, and the failure would otherwise surface once per
+          # architecture as "APKBUILD: No such file or directory".
           git add -A aports
           git diff --cached --quiet -- aports || {
             echo 'recipes are stale or missing, run: python3 scripts/gen-app-recipes.py' >&2
             git status --short -- aports
             exit 1
           }
+      - name: Check that shipped distfiles match their checksums
+        run: python3 scripts/check-distfiles.py
       - name: Check that the lockfile tracks upstream
         # Informational, and deliberately not fatal: a release published
         # yesterday is not a defect in the change being built, and it must not
         # hold up publication of everything else. The weekly schedule run is
         # where this annotation is meant to show up. A hash that is simply wrong
-        # is caught by abuild during the build, not here.
+        # is caught by abuild during the build, not here: checking it means
+        # downloading the tarball. The files a recipe ships rather than
+        # downloads are checked by the step above, without a download.
         run: python3 scripts/update-checksums.py --check ||
           echo "::warning::config/apps.lock.json is behind upstream, run scripts/update-checksums.py"
       - name: Check that uflinux-files tracks upstream
@@ -133,8 +137,8 @@ jobs:
           PACKAGES: ${{ github.event.inputs.packages }}
         run: python3 scripts/ci-matrix.py
       - name: Check that a run which publishes can sign
-        # Fail here rather than after 107 builds: without the key every shard
-        # generates its own throwaway, the index then rejects every APK as
+        # Fail here rather than after every compile shard: without the key each
+        # shard generates its own throwaway, the index then rejects every APK as
         # "BAD signature", and the run that discovers this is the expensive one.
         # A tag pushed to a fork is the case this catches. The secrets are read
         # through env, because the secrets context is not available in `if`.
