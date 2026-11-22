@@ -31,6 +31,18 @@ if [ ! -f "$root/subprojects/magpie/Cargo.toml" ]; then
     echo "no subprojects/magpie/Cargo.toml in $root: is the submodule checked out?" >&2
     exit 2
 fi
+# Upstream's meson build injects BUILD_ROOT into its cargo invocation
+# (src/meson.build): missioncenter's main.rs includes
+# $BUILD_ROOT/src/config.rs, the file configure_file generates from
+# config.rs.in into the meson build directory.  This script replaces that
+# cargo invocation, so it has to provide the variable itself.  The argument
+# above is exactly that directory, and the recipe's first meson compile has
+# already produced the file.
+if [ ! -f "$out/src/config.rs" ]; then
+    echo "no meson-generated config.rs in $out/src: run meson compile first" >&2
+    exit 2
+fi
+export BUILD_ROOT="$out"
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 train=${MC_PGO_TRAIN:-$here/mission-center-pgo-train.sh}
 if [ ! -f "$train" ]; then

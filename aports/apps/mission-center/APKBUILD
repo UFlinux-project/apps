@@ -182,7 +182,7 @@ build() {
 		rm -f "$_b/src/release/missioncenter-magpie"
 		PATH="$srcdir/pgo-tools/bin:/usr/lib/llvm22/bin:$PATH" \
 		CARGO_TARGET_DIR="$_targets" \
-		RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/usr/src/$pkgname-$pkgver-r$pkgrel" \
+		RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/usr/src/$pkgname-$pkgver-r$pkgrel --remap-path-prefix=$_b=/usr/src/$pkgname-$pkgver-r$pkgrel/build" \
 		MC_NVTOP_TARBALL="$srcdir/$_nvtop_commit.tar.gz" \
 		MC_TRAIN_SRCROOT="$builddir" \
 		MC_RESOURCE_DIR="$_b/resources" \
@@ -194,6 +194,10 @@ build() {
 			"$_targets/pgo-bolt/$CTARGET/magpie/$CTARGET/release/magpie-bolt-optimized" \
 			"$_b/subprojects/magpie/src/release/magpie" || return 1
 	else
+		# main.rs includes $BUILD_ROOT/src/config.rs, the file meson's
+		# configure_file wrote into $_b.  Upstream's cargo invocation gets it
+		# from src/meson.build; here the recipe runs cargo itself.
+		export BUILD_ROOT="$_b"
 		cargo auditable build --release --frozen \
 			--target "$CTARGET" --target-dir "$_targets/missioncenter" ||
 			return 1
@@ -246,7 +250,7 @@ sha512sums="
 4b9d6ce650e1fa6ada9c568dc9e6aa9caf53cc25afeaf3e199fecd6b2c82b4e1b05e9d721d1a3d1bf23816cd250f420d3b470852b137fb58ccb7f85ea3906ce2  gng-a5272b3c1d853caa4044b737cf49257bfc4c86f2.tar.gz
 c1c786252f588d0145f5c0799f33b98428e65ea84876223e26fd02002aedb1d96b32e396c90a90f732328e24553c8c7176c1a9a119efd2d0389107e31cc0d8ac  app-detection-26b93b8c6f0de6912f0a17022f7ece76bad87612.tar.gz
 f4f1b326b88f764d082872d50ca6f55ad269c090b14bbda29e0d61e86968f08b08e674a19f92a7622327e13d600d9a224b4fbdf6325cb3fa2f2a78c700b3d4b0  nvtop-3d4a953da02bc18886734613bb9f60ff80669de7.tar.gz.noauto
-982e244e4a6a65677365b1358b587553bef9988b0f776f4ae63d75168a80a5238b31ddeade90ba6e2f4c9c34584c79f29d180412ef92c8104bfe6b57179b7092  mission-center-pgo-build.sh
+675a0a51e750229046910c7c0f784e29f254c4f62980086e13b3034510b4790de080352851b6d40b39db18884888f540f3d167ba8855b8bcede75577f399e74e  mission-center-pgo-build.sh
 e2ee888a5bc7cda542ab7218ac2d6636511a15bdcf11fc672809cb88711028b76c58fe394413ce13645766657db27e70f2512037874d5972e5b7c263e32c7af6  mission-center-pgo-train.sh
-69b16a054e23fa01664d9ae3f3ad1f641fe8ff1c758b9eb9afb3ebe5f56f54f2e313edcd99269d9e5a117552d100a900d28b405c736315c6cb9b7cbb9395dfdd  mission-center-pgo-driver.py
+e3e2173a809fb5bc8f74ae2d61f96c71e5ec418e65d2cb69ac4d8c5c6ff885d982c9141bad66733d9abd2529888e54b70387e7f1651f0a286d41b0bcca10bfeb  mission-center-pgo-driver.py
 "

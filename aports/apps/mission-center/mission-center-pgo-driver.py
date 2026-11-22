@@ -46,6 +46,10 @@ elif tool == 'cargo':
         work = p(args[args.index('--target-dir') + 1])
         name = args[args.index('--bin') + 1]
         target = args[args.index('--target') + 1]
+        # main.rs includes $BUILD_ROOT/src/config.rs, so the driver must export
+        # the meson build directory it was handed.
+        assert os.environ['BUILD_ROOT'] == os.environ['TEST_BUILD_ROOT'], os.environ.get('BUILD_ROOT')
+        assert (p(os.environ['BUILD_ROOT']) / 'src' / 'config.rs').is_file()
         if name == 'magpie':
             # build.rs only stays offline when the vendored archive is staged
             # in its drop-in directory, which cargo scopes to the target triple.
@@ -81,7 +85,7 @@ elif tool == 'timeout':
 
 class DriverTests(unittest.TestCase):
     def run_driver(self, arch='x86_64', failure='', target=None, abi='musl', env_extra=None,
-                   cwd=None):
+                   cwd=None, with_config=True):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             tools = root / 'tools'
@@ -103,6 +107,9 @@ class DriverTests(unittest.TestCase):
             host = arch + '-test-linux-' + abi
             build = root / '_build'
             (build / 'src' / 'release').mkdir(parents=True)
+            # What meson's configure_file leaves behind for main.rs to include.
+            if with_config:
+                (build / 'src' / 'config.rs').write_text('pub const VERSION: &str = "1.2.0";\n')
             output = root / 'custom-target'
             for name, _, _, _ in BINARIES:
                 for directory, filename in [('pgo-profiles', 'stale.profraw'),
@@ -113,7 +120,8 @@ class DriverTests(unittest.TestCase):
             log = root / 'training.log'
             env = dict(os.environ, PATH=str(tools) + ':' + os.environ['PATH'],
                        CARGO_TARGET_DIR=str(output), TEST_HOST=host, TEST_FAIL=failure,
-                       TEST_LOG=str(log), TEST_NVTOP=NVTOP, MC_NVTOP_TARBALL=str(nvtop),
+                       TEST_LOG=str(log), TEST_NVTOP=NVTOP, TEST_BUILD_ROOT=str(build),
+                       MC_NVTOP_TARBALL=str(nvtop),
                        MC_PGO_TRAIN=str(trainer),
                        RUSTFLAGS='-Ctarget-cpu=generic -Clink-arg=-Wl,-z,pack-relative-relocs',
                        TEST_FINI_ARRAY=str(int(arch == 'aarch64' and abi == 'musl')))
@@ -124,7 +132,7 @@ class DriverTests(unittest.TestCase):
                                     timeout=60)
             published = {installed: (build / 'src' / 'release' / installed)
                          for _, _, installed, _ in BINARIES}
-            if failure or target or env_extra or cwd is not None:
+            if failure or target or env_extra or cwd is not None or not with_config:
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 for path in published.values():
                     self.assertFalse(path.exists())
@@ -182,6 +190,12 @@ class DriverTests(unittest.TestCase):
                 with self.subTest(name=name):
                     result = self.run_driver(env_extra={'MC_NVTOP_TARBALL': str(tarball)})
                     self.assertIn('40-hex-sha', result.stderr)
+
+    def test_generated_config_is_required(self):
+        # main.rs includes $BUILD_ROOT/src/config.rs, so the driver refuses a
+        # build directory that meson has not generated it in yet.
+        self.assertIn('config.rs',
+                      self.run_driver(with_config=False).stderr)
 
     def test_source_root_is_required(self):
         with tempfile.TemporaryDirectory() as empty:
