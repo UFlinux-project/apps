@@ -1,0 +1,39 @@
+# Maintainer: uflinux3-apps contributors <noreply@uflinux.org>
+pkgname=gridcraft
+pkgver=0.19.1
+pkgrel=0
+pkgdesc="Calculate, analyse and chart data in workbooks"
+url="https://getartcraft.com/apps/gridcraft"
+arch="all"
+license="MIT OR Apache-2.0"
+# Upstream resolves git dependencies (craft-libs, egui, winit forks) that have no
+# crates.io tarballs, so the build cannot be offline.
+options="net !check"
+makedepends="
+	cargo
+	rust
+	git
+	cmake
+	samurai
+	perl
+	desktop-file-utils
+	appstream
+	"
+depends="
+	wayland-libs-egl
+	hicolor-icon-theme
+	shared-mime-info
+	"
+subpackages="
+	$pkgname-doc
+	"
+source="gridcraft-0.19.1.tar.gz::https://github.com/storytold/gridcraft/archive/refs/tags/v0.19.1.tar.gz
+	sandbox-32bit.patch"
+builddir="$srcdir/gridcraft-0.19.1"
+_craft_app="gridcraft"
+_craft_bins="gridcraft gridcraft-cli"
+. "$startdir/../craft-common.sh"
+sha512sums="
+2e0bb46c1afecc1954dfa8db6559b985a134c8c69bd3fd2cf663b94ea443b8193346d7d1d381d88155b8daf8d64439f7445f83247d74026f7af8687f132ee1af  gridcraft-0.19.1.tar.gz
+d8b24037f57959c74ed0f02ea4e42f3e052814bb87fd11cbb918d33e84f6d42cba041ec6c7ae1d24390f912fe23c806e48dd7305a6b0026047c145155b360bed  sandbox-32bit.patch
+"

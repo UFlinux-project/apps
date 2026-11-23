@@ -1,13 +1,13 @@
 # Adding or updating a package
 
-## The fourteen Craft apps
+## Craft apps
 
 Their recipes are generated. `scripts/gen-app-recipes.py` holds the per-app
 deltas (description, extra `-dev` packages, optional cargo features, whether
 upstream ships a man page) and `config/apps.lock.json` holds the version, the
 tarball hash and the binary names. The common phases live in
 `aports/apps/craft-common.sh`, which each recipe sources, so a change to how
-Craft apps are built is a one-line change for all fourteen.
+Craft apps are built applies to every Craft recipe.
 
 ### Bumping a version
 
@@ -35,7 +35,7 @@ that quietly omits an app.
 writing anything. The build workflow runs it on every run and turns a stale
 lockfile into a warning annotation rather than a failure: a release published
 yesterday is not a defect in the change being built, and it should not hold up
-publishing the other fourteen packages. Now that the update workflow releases
+publishing the other packages. Now that the update workflow releases
 daily, that annotation is a backstop - it goes off if the update workflow is
 broken or disabled, not in the normal course of events. A checksum that is simply
 *wrong* is a different matter - abuild verifies it and fails the build.
@@ -202,30 +202,12 @@ needs the key too, not only the one that publishes.
 Emulation is what makes the matrix expensive, and `build.py` handles it rather
 than the workflow: it compares the target against the runner's own `uname -m` and,
 when qemu-user is involved, sets `CARGO_BUILD_JOBS=1` so instruction translation
-stays inside the runner's memory. It also disables LTO there, and on any 32-bit
-architecture, and raises the codegen unit count to `EMULATED_CODEGEN_UNITS`. That
-second part is specific to the Craft apps, whose release profile asks for thin LTO
-with a single codegen unit, which makes the final link of the biggest binary one
-single-threaded pass over the whole program - measured at over half an hour on
-native x86_64, and the phase most likely to run past a runner's time limit under
-emulation, being the one phase more jobs cannot shorten: `vectorcraft` on ppc64le
-spent the entire 330 minutes of the build step inside that link on a cold cache,
-with gigabytes of memory still free. Turning LTO off makes the link parallel, and
-more codegen units split it further, for a slightly larger binary - a trade worth
-making only where the alternative is that the architecture is not published at
-all; a native 64-bit build keeps upstream's profile, with the one exception below.
-`uflinux-files` asks for fat LTO over eight codegen units and
-is overridden the same way, because the rule is in the build driver rather than in
-any one recipe - a recipe that wants to keep its own profile sets the variable
-itself instead of leaving it to the default. `mission-center` is such a recipe:
-neither of its two workspaces asks for LTO at all, so it sets no override and
-keeps upstream's `-O3`/single-codegen-unit profile on a native build, where the
-PGO pipeline passes `-C opt-level=3` anyway (on aarch64 the driver's codegen-unit
-override below reaches it too, since it is an environment variable rather than a
-recipe setting). It does set
-`CARGO_PROFILE_RELEASE_OPT_LEVEL=z` when the build driver tells it (through
-`MISSION_CENTER_PGO=0`) that the target cannot be executed, so an emulated build
-compiles both workspaces with `-Os`.
+stays inside the runner's memory. Emulated and 32-bit builds disable cross-crate
+LTO and use `EMULATED_CODEGEN_UNITS` to split code generation into smaller units.
+On ppc64le, a cold `vectorcraft` build previously spent the entire 330-minute
+build step in its final link. The driver writes the overrides to abuild's user
+config, which loads after Alpine's default Cargo settings. The same settings
+apply to the Craft apps, UFLinux Files and Mission Center.
 
 aarch64 is the one native 64-bit architecture where the profile is not the whole
 story. `lightcraft` and `vectorcraft` failed there by losing the runner rather
@@ -242,24 +224,16 @@ memory; and exit 1 immediately after `>>> Build complete` is a recipe or cleanup
 failure, not a resource one. The ARM runner is not the weaker machine (both are 4
 vCPU, 16 GB and 14 GB of SSD), so the answer is to lower the peak rather than the
 binary: the workflow adds a swapfile on that runner, and `build.py` caps
-concurrent `rustc` at `ARM64_BUILD_JOBS` so a thin-LTO link and its neighbours do
+concurrent `rustc` at `ARM64_BUILD_JOBS` so an LTO link and its neighbours do
 not all ask for memory at once, while `ARM64_CODEGEN_UNITS` splits the link into
-several backends instead of one linker holding the whole program. Thin LTO itself
-is left alone - it is what the profile asks for, it is far cheaper than fat LTO,
-and the headroom is in the link rather than in the optimisation. Nothing about the
-package changes, only how long it takes, and the slowest successful aarch64 shard
-runs for 52 minutes of the 350 allowed. An explicit `CARGO_BUILD_JOBS` still wins
-over the cap.
+several backends. LTO stays enabled on native aarch64. An explicit
+`CARGO_BUILD_JOBS` still wins over the cap.
 
-The 32-bit architectures (`x86`, `armv7`) are not currently in
-`config/architectures.json`, and that is a separate decision from the LTO rule
-above: a 32-bit `rustc` is a 32-bit process with barely 3 GiB of address space
-whatever runs it, so the same single-codegen-unit link fails with
-`rustc-LLVM ERROR: out of memory` on an x86_64 kernel as surely as under
-emulation - the `x86` shards of the bigger apps died there while the 64-bit ones
-passed. `build.py` already disables LTO for those architectures, so re-adding one
-to the config gets the cheaper link automatically; what has to be shown first is
-that the apps fit in 3 GiB once they do.
+The 32-bit targets (`x86`, `armv7`) disable cross-crate LTO and use 64 codegen units
+even when the host runs the chroot directly. A 32-bit `rustc` on an x86_64
+kernel still has a 32-bit address space. Previous builds of the larger Craft
+apps failed with `rustc-LLVM ERROR: out of memory` while linking as a single
+codegen unit.
 
 A recipe that runs `cargo` itself instead of leaving it to meson has to know that
 `BUILD_ROOT` is abuild's own variable: it holds the directory `rootbld()` created

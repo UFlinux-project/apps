@@ -90,14 +90,9 @@ def configuration(arches, apps, event, ref, wanted=""):
                 "runner": arches[a]["runner"],
                 "package": p,
                 # Decides one thing: whether the shard installs qemu-user. This
-                # list of "needs no emulation" architectures is the 64-bit
-                # architecture's own name, matching build.py's NATIVE table.
-                # Staying on the strict side is harmless - installing qemu where
-                # the kernel would not have needed it changes nothing, because
-                # the native ELF handler has higher binfmt priority and wins -
-                # while the opposite would leave the shard without a translator.
-                # The reason the job's timeout is so long.
-                "emulated": "true" if a not in {"x86_64", "aarch64"} else "false",
+                # x86 runs directly on the x86_64 runner. ARM64 runners use
+                # qemu-arm for armv7 because AArch32 support is optional.
+                "emulated": "true" if a not in {"x86", "x86_64", "aarch64"} else "false",
             }
             for a in selected
             for p in built

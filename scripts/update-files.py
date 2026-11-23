@@ -44,7 +44,7 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RECIPE = os.path.join(ROOT, "aports", "apps", "uflinux-files", "APKBUILD")
-REPO = "UFlinux-project/uflinux3-filemanager"
+REPO = "UFlinux-project/uflinux-files"
 ARCHIVE = "https://github.com/" + REPO + "/archive/"
 
 USER_AGENT = "uflinux3-apps-update-files"
@@ -80,7 +80,7 @@ def fetch(url):
         return response.read()
 
 
-def workspace_version(blob, url):
+def workspace_version(blob, url, commit):
     """Read [workspace.package] version from the tarball's root Cargo.toml.
 
     Same check update-checksums.py makes: a version that disagrees with the
@@ -89,9 +89,9 @@ def workspace_version(blob, url):
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as archive:
         names = archive.getnames()
         roots = {n.split("/")[0] for n in names if "/" in n}
-        if len(roots) != 1:
-            raise RuntimeError(url + ": not a single-directory tarball")
-        root = roots.pop()
+        root = "uflinux-files-" + commit
+        if roots != {root}:
+            raise RuntimeError(url + ": expected an archive rooted at " + root)
         if root + "/Cargo.toml" not in names:
             raise RuntimeError(url + ": no Cargo.toml at the root")
         text = archive.extractfile(root + "/Cargo.toml").read().decode("utf-8")
@@ -134,7 +134,7 @@ def rewrite(text, commit, version, release, sha512):
     text = re.sub(r'^pkgrel=?("[^"]*"|\S+)$', 'pkgrel=' + str(release),
                   text, count=1, flags=re.MULTILINE)
     text = re.sub(r'^[0-9a-f]{128}(\s+)uflinux-files-\S+$',
-                  sha512 + r"\1uflinux-files-" + version + ".tar.gz",
+                  sha512 + r"\1uflinux-files-" + commit + ".tar.gz",
                   text, count=1, flags=re.MULTILINE)
     return text
 
@@ -148,9 +148,10 @@ def main():
     try:
         old = read_recipe()[0]
         commit, branch = head_commit()
-        blob = fetch(ARCHIVE + commit + ".tar.gz")
+        url = ARCHIVE + commit + ".tar.gz"
+        blob = fetch(url)
         sha512 = hashlib.sha512(blob).hexdigest()
-        version = workspace_version(blob, ARCHIVE + commit + ".tar.gz")
+        version = workspace_version(blob, url, commit)
     except (RuntimeError, OSError, subprocess.CalledProcessError,
             urllib.error.URLError) as error:
         print("failed     uflinux-files: " + str(error), file=sys.stderr)

@@ -1,6 +1,6 @@
 # Maintainer: uflinux3-apps contributors <noreply@uflinux.org>
 # Fork of the upstream recipe at
-# https://github.com/UFlinux-project/uflinux3-filemanager/tree/main/aports/uflinux-files,
+# https://github.com/UFlinux-project/uflinux-files/tree/main/aports/uflinux-files,
 # kept in this repository because the pin, the source bundle and the release
 # profile all have to agree with what this project's build does. The upstream
 # file is the reference for what the package should contain; the notes below
@@ -12,9 +12,9 @@ pkgname=uflinux-files
 # from the published repository, and apk has to prefer the new file. Maintained
 # by scripts/update-files.py.
 pkgver=0.1.0
-pkgrel=13
+pkgrel=14
 pkgdesc="UFLinux file manager: GTK4 browsing, archives, mounts and search"
-url="https://github.com/UFlinux-project/uflinux3-filemanager"
+url="https://github.com/UFlinux-project/uflinux-files"
 # Upstream lists the architectures it has tested; this project publishes the set
 # in config/architectures.json, so the recipe must not narrow it.
 arch="all"
@@ -50,12 +50,13 @@ options="net"
 # Upstream has no tags and no releases, so a commit is the only addressable pin.
 # scripts/update-files.py rewrites this, pkgver, pkgrel and the checksum below
 # when the default branch moves.
-_commit="fd2f9eb37a3d5cc6e95cc1a0c10d8027b2a74f28"
+_commit="760e47ac1cfa98b9310ff58c0424eebe7c88b0bd"
 # GitHub's archive of one commit replaces upstream's hand-made bundle: it
 # carries Cargo.toml, Cargo.lock, rust-toolchain.toml, crates/, data/, docs/,
 # tests/, LICENSE and README.md, and its checksum does not drift.
-source="$pkgname-$pkgver.tar.gz::https://github.com/UFlinux-project/uflinux3-filemanager/archive/$_commit.tar.gz"
-builddir="$srcdir/uflinux3-filemanager-$_commit"
+source="$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz
+	trash-timestamps.patch"
+builddir="$srcdir/$pkgname-$_commit"
 export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_TEST_DEBUG=0
 # Upstream forces the distro's release profile with plain assignments, which
@@ -168,9 +169,9 @@ mount_helper() {
 	depends="polkit-elogind cifs-utils nfs-utils"
 	amove usr/libexec/uflinux-files-mount usr/share/polkit-1 usr/share/uflinux-files
 }
-# Written by scripts/update-files.py, which fetches the archive above and hashes
-# it. The file name has to match $pkgname-$pkgver.tar.gz, so a pkgver bump and a
-# checksum bump always land in the same commit.
+# Written by scripts/update-files.py. The distfile name includes the commit so
+# abuild cannot reuse a cached archive from an older pin at the same pkgver.
 sha512sums="
-4808f567fb7da6b9932d75abf34163a40a20ad1e7fcdb41f387d276bf6ab9cdb2e6e1349340182212aedcfb759ca07b35f52f7674526bcc8b8dad979eb2e58c7  uflinux-files-0.1.0.tar.gz
+22a0eda1909a872683cd94f0ccf4e0a5fa216f02668deb8778fd53856ba86ae6eeaacd76697911f5d797528c3e162e8de82b3a0ae4bbfd63c91c6363e6f8ccd0  uflinux-files-760e47ac1cfa98b9310ff58c0424eebe7c88b0bd.tar.gz
+522802dfca8a24cc32eef9327178dce78fa6f8ae7f161a94c284aca1a9d0cab770b88de298c33080360d8249eb3175a876cf5bceadf68d62846a0b8d3b6f229d  trash-timestamps.patch
 "

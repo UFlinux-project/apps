@@ -9,9 +9,11 @@ therefore: update the lockfile, run this script, commit the diff.
     python3 scripts/gen-app-recipes.py
 """
 
+import hashlib
 import json
 import os
 import sys
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOCK = os.path.join(ROOT, "config", "apps.lock.json")
@@ -27,10 +29,12 @@ DEP_PW = "pipewire-dev mesa-dev libdrm-dev"
 
 # Per-app deltas. Everything else is uniform and lives in craft-common.sh.
 #   desc    -> pkgdesc (upstream's own desktop Comment, capitalised as a phrase)
+#   license -> SPDX expression, defaults to Apache-2.0
 #   bins    -> binaries to build and install; defaults to [app, app-cli]
 #   feats   -> cargo features, qualified the way upstream's package.sh passes them
 #   man     -> upstream ships a man-and-completions example for the CLI
 #   mk      -> extra makedepends beyond the common set
+#   patches -> local source patches applied by abuild
 #
 # The common set needs explaining: git because every app depends on git repos
 # (craft-libs, egui, winit) with no crates.io tarball; cmake + samurai + perl
@@ -62,6 +66,11 @@ APPS = {
         "desc": "Edit video, color and sound",
         # muda's native menu bar uses GTK here, unlike the other apps.
         "mk": DEP_ALSA + " " + DEP_GTK,
+    },
+    "gridcraft": {
+        "desc": "Calculate, analyse and chart data in workbooks",
+        "license": "MIT OR Apache-2.0",
+        "patches": ["sandbox-32bit.patch"],
     },
     "lightcraft": {
         "desc": "Organise photos and develop raw files, non-destructively",
@@ -104,7 +113,7 @@ pkgrel=0
 pkgdesc="{desc}"
 url="https://getartcraft.com/apps/{app}"
 arch="all"
-license="Apache-2.0"
+license="{license}"
 # Upstream resolves git dependencies (craft-libs, egui, winit forks) that have no
 # crates.io tarballs, so the build cannot be offline.
 options="net !check"
@@ -129,11 +138,11 @@ subpackages="
 \t$pkgname-doc
 {sub}
 \t"
-source="{pkgname}-{pkgver}.tar.gz::{url}"
+source="{source}"
 builddir="$srcdir/{app}-{pkgver}"
 {vars}
 sha512sums="
-{sum}  {pkgname}-{pkgver}.tar.gz
+{sums}
 "
 """
 
@@ -146,6 +155,13 @@ def render(app, lock, meta):
     bins = meta.get("bins") or [app, app + "-cli"]
     feats = meta.get("feats") or lock.get("features") or []
     man = bool(meta.get("man") or lock.get("man_completions"))
+    archive = f'{app}-{lock["version"]}.tar.gz'
+    sources = [f'{archive}::{lock["url"]}']
+    sums = [f'{lock["sha512"]}  {archive}']
+    for patch in meta.get("patches", []):
+        sources.append(patch)
+        digest = hashlib.sha512(Path(APKS, app, patch).read_bytes()).hexdigest()
+        sums.append(f"{digest}  {patch}")
 
     mk = ["\t" + d for d in (meta.get("mk") or "").split() if d]
     # Anything actually linked (libwayland-egl, libGL, libEGL, libasound, ...) is
@@ -183,13 +199,14 @@ def render(app, lock, meta):
         pkgname=app,
         pkgver=lock["version"],
         desc=meta["desc"],
+        license=meta.get("license", "Apache-2.0"),
         app=app,
         mk="\n".join(mk),
         dep=indent_list(dep, ""),
         sub="\n".join(sub),
-        url=lock["url"],
+        source="\n\t".join(sources),
         vars=vars_,
-        sum=lock["sha512"],
+        sums="\n".join(sums),
     )
     # An unused optional block expands to a blank line; the recipes have no other
     # blank lines, so dropping them keeps the lists tight.

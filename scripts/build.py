@@ -43,22 +43,18 @@ ARCHES = json.loads((PROJECT / "config/architectures.json").read_text())
 APPS = json.loads((PROJECT / "config/apps.lock.json").read_text())["apps"]
 PACKAGES = sorted([*APPS, "mission-center", "uflinux-files"])
 
-# Which target architectures a host can execute without emulation, keyed by the
-# `uname -m` of the host. Every architecture we build is 64-bit and its Alpine
-# name matches `uname -m` exactly, so the table is nearly a tautology; it stays
-# explicit because getting it wrong in the loose direction means the build
-# proceeds without translation and dies on an exec format error. (A 32-bit ARM
-# host would be the exception: `uname -m` says `armv7l` where Alpine says
-# `armv7`.)
+# Which targets the host kernel can run directly. GitHub's x86_64 runners
+# support IA-32, while AArch32 is optional on ARM64 and uses qemu-arm in CI.
 NATIVE = {
-    "x86_64": {"x86_64"},
+    "x86_64": {"x86_64", "x86"},
+    "i686": {"x86"},
     "aarch64": {"aarch64"},
+    "armv7l": {"armv7"},
     "ppc64le": {"ppc64le"},
     "riscv64": {"riscv64"},
 }
 
-# Alpine arch names whose toolchain is a 32-bit process. See the LTO comment in
-# stage_packages(); no architecture listed here is currently built.
+# Alpine arch names whose toolchain is a 32-bit process.
 ARCH32 = {"x86", "armv7"}
 
 # Free space a Rust release build plus an Alpine toolchain comfortably needs.
@@ -68,8 +64,7 @@ MINIMUM_FREE_BYTES = 10 * 1024**3
 # stage_packages(); an explicit CARGO_BUILD_JOBS in the environment wins.
 ARM64_BUILD_JOBS = "2"
 
-# Codegen units for a native aarch64 build. aarch64 keeps upstream's thin LTO and
-# only gets the link split up. See the comment in stage_packages().
+# Codegen units for a native aarch64 build, which keeps LTO enabled.
 ARM64_CODEGEN_UNITS = "16"
 
 # Codegen units for an emulated (or 32-bit) build, where LTO is off anyway.
@@ -587,10 +582,6 @@ class Build:
             # A restored Actions cache belongs to the host user, not to uid 1000.
             self.chroot("chown", "-R", "builder:builder", "/cache/cargo", "/cache/target", "/cache/distfiles")
             self.chroot("install", "-d", "-o", "builder", "-g", "builder", "/home/builder/packages", "/home/builder/.abuild")
-            self.write("home/builder/.abuild/abuild.conf",
-                       f'PACKAGER="{CONFIG["packager"]}"\n'
-                       f'PACKAGER_PRIVKEY="{self.env["PACKAGER_PRIVKEY"]}"\n'
-                       f'PACKAGER_PUBKEY="/var/lib/uflinux-apps/keys/{self.key}"\n')
             jobs = os.environ.get("CARGO_BUILD_JOBS", "")
             # The Craft profiles ask for LTO with a single codegen unit, so the
             # last link of the biggest binary is one single-threaded pass over
@@ -615,21 +606,16 @@ class Build:
             # process no matter how many cores are idle.
             #
             # Under qemu-user the shard is fighting the step's wall-clock limit,
-            # so it gets LTO off entirely and codegen units high enough that the
+            # so it disables cross-crate LTO and uses enough codegen units that the
             # link is not the tail: vectorcraft spent the whole 330 minutes of
             # the step inside that link on a cold cache, and photocraft is
             # already at 328. One job keeps instruction translation inside the
-            # runner's memory. A native 64-bit build gets upstream's own profile,
+            # runner's memory. A native 64-bit build keeps abuild's defaults,
             # and only aarch64 gets anything overridden at all.
             #
-            # A 32-bit target needs LTO off for a second, harder reason: a
+            # A 32-bit target needs cross-crate LTO off for a second reason: a
             # 32-bit rustc cannot address that link at all, however many cores
-            # run it, so the override is about addressing rather than speed.
-            # ARCH32 is currently empty of built architectures - `x86` and
-            # `armv7` are not in config/architectures.json - so this branch is
-            # dormant. Building one would also need a rootfs entry in
-            # config/repository.json and, for a real 32-bit host, the `armv7l`
-            # name difference noted by NATIVE above.
+            # run it, so this also applies to x86 on an x86_64 runner.
             emulated = self.arch not in NATIVE.get(platform.machine(), set())
             cargo = {} if not (emulated or self.arch in ARCH32) else {
                 "CARGO_PROFILE_RELEASE_LTO": "false",
@@ -637,7 +623,7 @@ class Build:
             }
             if emulated:
                 cargo["CARGO_BUILD_JOBS"] = "1"
-            # aarch64 is native, so it keeps upstream's thin LTO - and pays for
+            # aarch64 is native, so it keeps LTO enabled and pays for
             # that in memory. The ARM runner is the same 4 vCPU / 16 GB machine
             # as the x86_64 one, but lightcraft and vectorcraft have now lost
             # the runner at the same point in the build, repeatedly, from a
@@ -647,31 +633,35 @@ class Build:
             # the link lets several thin-LTO backends finish and link parts at
             # once instead of holding the whole program in one linker, and
             # capping the job count bounds the compile phase that feeds it.
-            #
-            # Thin LTO stays on: it is what the profile asks for, it is far
-            # cheaper in memory than fat LTO, and the headroom is in the link
-            # rather than in the optimisation. Nothing about the package changes
-            # except the time it takes, and the slowest successful aarch64 shard
-            # runs for 52 minutes of the 350 the job is allowed.
             if self.arch == "aarch64":
                 cargo.setdefault("CARGO_BUILD_JOBS", ARM64_BUILD_JOBS)
                 cargo.setdefault("CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
                                  ARM64_CODEGEN_UNITS)
             if jobs:
                 cargo["CARGO_BUILD_JOBS"] = jobs
+            # abuild's default.conf sets these same variables unconditionally.
+            # Its user config loads afterward, so the overrides reach Cargo.
+            self.write("home/builder/.abuild/abuild.conf",
+                       f'PACKAGER="{CONFIG["packager"]}"\n'
+                       f'PACKAGER_PRIVKEY="{self.env["PACKAGER_PRIVKEY"]}"\n'
+                       f'PACKAGER_PUBKEY="/var/lib/uflinux-apps/keys/{self.key}"\n'
+                       + "".join(f"export {name}={shlex.quote(value)}\n"
+                                 for name, value in cargo.items()))
             # BOLT executes instrumented binaries and requires a native worker.
             # Build its Alpine tool package locally before resolving the PGO
             # recipes' dependencies; it is not available in the Alpine
             # repositories, and both hand-written recipes that use it - Files
             # and Mission Center - install it.
-            cargo["UFLINUX_FILES_PGO"] = "0" if emulated else "1"
-            cargo["MISSION_CENTER_PGO"] = "0" if emulated else "1"
-            if ({"uflinux-files", "mission-center"} & set(self.args.selected())
-                    and not emulated and self.arch in ("x86_64", "aarch64")):
+            pgo = not emulated and self.arch in {"x86_64", "aarch64"}
+            pgo_env = {
+                "UFLINUX_FILES_PGO": "1" if pgo else "0",
+                "MISSION_CENTER_PGO": "1" if pgo else "0",
+            }
+            if pgo and {"uflinux-files", "mission-center"} & set(self.args.selected()):
                 directory = "cd /project/aports/build-tools/llvm22-bolt && "
                 self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk"})
                 try:
-                    self.chroot("su", "-s", "/bin/sh", "builder", "-c", directory + "abuild", extra_env=cargo)
+                    self.chroot("su", "-s", "/bin/sh", "builder", "-c", directory + "abuild")
                     self.chroot("sh", "-ec", "apk add /home/builder/packages/build-tools/*/llvm22-bolt-*.apk")
                 finally:
                     self.chroot("sh", "-ec", directory + "abuild -F undeps", extra_env={"SUDO_APK": "apk"})
@@ -681,10 +671,11 @@ class Build:
                     # qemu-user cannot elevate through a setuid binary, so resolve
                     # dependencies as root and compile unprivileged. Plain abuild
                     # still verifies that every makedepend is installed.
-                    self.chroot("sh", "-ec", directory + "abuild -F deps", extra_env={"SUDO_APK": "apk", "UFLINUX_FILES_PGO": cargo["UFLINUX_FILES_PGO"], "MISSION_CENTER_PGO": cargo["MISSION_CENTER_PGO"]})
+                    self.chroot("sh", "-ec", directory + "abuild -F deps",
+                                extra_env={**pgo_env, "SUDO_APK": "apk"})
                     try:
                         self.chroot("su", "-s", "/bin/sh", "builder", "-c", directory + "abuild",
-                                    extra_env=cargo)
+                                    extra_env=pgo_env)
                     finally:
                         self.chroot("sh", "-ec", directory + "abuild -F undeps", extra_env={"SUDO_APK": "apk"})
             finally:
@@ -724,14 +715,14 @@ class Build:
         # fallback keeps the page useful for a local "build.py --stage index".
         base = os.environ.get("PAGES_BASE_URL", "").strip().rstrip("/")
         repo = base + "/" + CONFIG["repository_path"] if base else \
-            "https://OWNER.github.io/uflinux3-apps/" + CONFIG["repository_path"]
+            "https://OWNER.github.io/apps/" + CONFIG["repository_path"]
         lines = [
             "<!doctype html>",
             '<meta charset="utf-8">',
             "<title>" + origin + "</title>",
             "<h1>" + origin + "</h1>",
-            "<p>Third-party applications for <a href=\"https://github.com/"
-            "UFlinux-project/uflinux3\">UFLinux</a>, built against Alpine "
+            "<p>Applications for <a href=\"https://github.com/"
+            "UFlinux-project/uflinux\">UFLinux</a>, built against Alpine "
             + CONFIG["alpine"]["version"] + ".</p>",
             # apk-tools reads top-level *.list files from /etc/apk/repositories.d
             # but no package ships that directory, so it has to be created first.

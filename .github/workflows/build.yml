@@ -178,9 +178,8 @@ jobs:
       # single-threaded final link that emulation makes expensive. Keeping the
       # rule in one place is what keeps the two from disagreeing - including the
       # reduced job count for aarch64, which lives beside that rule rather than
-      # here. Setting it here would take it out of build.py's control without
-      # taking it out of the local build's: `env -i` in the chroot drops any
-      # variable build.py does not forward on purpose.
+      # here. The driver writes the Cargo overrides to abuild's user config
+      # so they take precedence over Alpine's defaults in CI and local builds.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -296,7 +295,7 @@ jobs:
     # Gate on ci-matrix.py's own decision rather than a copy of it: publishing
     # replaces the whole repository, so it may only happen from a run that built
     # every architecture - a push to the watched branch builds x86_64 alone and
-    # would otherwise deploy a site missing the other three. A pull request
+    # would otherwise deploy a site missing the other architectures. A pull request
     # cannot sign the result anyway, and deploying with an ephemeral key would
     # lock every client out. Forks still get every package built on x86_64.
     #

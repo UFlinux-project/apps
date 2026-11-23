@@ -80,6 +80,19 @@
       "features": [],
       "man_completions": false
     },
+    "gridcraft": {
+      "repo": "storytold/gridcraft",
+      "tag": "v0.19.1",
+      "version": "0.19.1",
+      "url": "https://github.com/storytold/gridcraft/archive/refs/tags/v0.19.1.tar.gz",
+      "sha512": "2e0bb46c1afecc1954dfa8db6559b985a134c8c69bd3fd2cf663b94ea443b8193346d7d1d381d88155b8daf8d64439f7445f83247d74026f7af8687f132ee1af",
+      "bins": [
+        "gridcraft",
+        "gridcraft-cli"
+      ],
+      "features": [],
+      "man_completions": false
+    },
     "lightcraft": {
       "repo": "storytold/lightcraft",
       "tag": "v0.21.1",
