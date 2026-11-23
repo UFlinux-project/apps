@@ -111,10 +111,10 @@
     },
     "pdfcraft": {
       "repo": "storytold/pdfcraft",
-      "tag": "v0.21.1",
-      "version": "0.21.1",
-      "url": "https://github.com/storytold/pdfcraft/archive/refs/tags/v0.21.1.tar.gz",
-      "sha512": "aabbea1fedfd526b38a3269340d10025a5cf930783df69a9d19845792799d3ca66ffcc9426cc08506f01cf482995c6516a436d76c691092a36bedd8584133d91",
+      "tag": "v0.22.0",
+      "version": "0.22.0",
+      "url": "https://github.com/storytold/pdfcraft/archive/refs/tags/v0.22.0.tar.gz",
+      "sha512": "1d9ea09f701a086367b2b3db9336692cbc11de9241325d1189765c05fcf2cd185746c01730c8cddae6210323e71405a1911ed7678b7e94145c857341021c0116",
       "bins": [
         "pdfcraft",
         "pdfcraft-cli"
