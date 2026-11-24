@@ -43,20 +43,6 @@ ARCHES = json.loads((PROJECT / "config/architectures.json").read_text())
 APPS = json.loads((PROJECT / "config/apps.lock.json").read_text())["apps"]
 PACKAGES = sorted([*APPS, "mission-center", "uflinux-files"])
 
-# Which targets the host kernel can run directly. GitHub's x86_64 runners
-# support IA-32, while AArch32 is optional on ARM64 and uses qemu-arm in CI.
-NATIVE = {
-    "x86_64": {"x86_64", "x86"},
-    "i686": {"x86"},
-    "aarch64": {"aarch64"},
-    "armv7l": {"armv7"},
-    "ppc64le": {"ppc64le"},
-    "riscv64": {"riscv64"},
-}
-
-# Alpine arch names whose toolchain is a 32-bit process.
-ARCH32 = {"x86", "armv7"}
-
 # Free space a Rust release build plus an Alpine toolchain comfortably needs.
 MINIMUM_FREE_BYTES = 10 * 1024**3
 
@@ -67,11 +53,7 @@ ARM64_BUILD_JOBS = "2"
 # Codegen units for a native aarch64 build, which keeps LTO enabled.
 ARM64_CODEGEN_UNITS = "16"
 
-# Codegen units for an emulated (or 32-bit) build, where LTO is off anyway.
-# Higher than aarch64's because an emulated shard is fighting the step's
-# wall-clock limit rather than the runner's memory. See the comment in
-# stage_packages().
-EMULATED_CODEGEN_UNITS = "64"
+EMULATED_CODEGEN_UNITS = "16"
 
 
 def run(args, **kwargs):
@@ -446,7 +428,7 @@ class Build:
     def preflight(self):
         if os.geteuid() != 0:
             raise RuntimeError("Run as root on a disposable Linux build host")
-        if self.arch not in NATIVE.get(platform.machine(), set()):
+        if self.arch != platform.machine():
             entry = next((p for p in Path("/proc/sys/fs/binfmt_misc").glob("qemu-" + ARCHES[self.arch]["qemu_user"] + "*")), None)
             if entry is None:
                 raise RuntimeError("No binfmt entry for " + self.arch + "; install qemu-user-binfmt")
@@ -492,20 +474,15 @@ class Build:
         apk_cache.symlink_to("/cache/apk")
         mirror, version = CONFIG["alpine"]["mirror"], CONFIG["alpine"]["version"]
         self.write("etc/apk/repositories", "".join(f"{mirror}/v{version}/{branch}\n" for branch in CONFIG["alpine"]["branches"]))
-        # Running apk is also the smoke test that this architecture can be
-        # executed at all: it is the first foreign binary the build runs. If the
-        # NATIVE table above ever claims more than a kernel delivers, the failure
-        # here is an exec format error from chroot, which says nothing about what
-        # was assumed, so ask for the architecture name instead and report the
-        # assumption that broke.
+        # apk is the first target binary the build executes. Use it to verify
+        # that the chroot runs and reports the expected architecture.
         try:
             reported = self.chroot("apk", "--print-arch", stdout=subprocess.PIPE).stdout.decode().strip()
         except subprocess.CalledProcessError as failure:
             raise RuntimeError(
                 f"Cannot execute the {self.arch} chroot on this {platform.machine()} host "
-                f"(exit {failure.returncode}). Either install and enable qemu-user-binfmt, "
-                "or, if the kernel really can run this architecture, add it to NATIVE in "
-                "scripts/build.py.") from failure
+                f"(exit {failure.returncode}). Check qemu-user-binfmt on cross-architecture hosts."
+            ) from failure
         if reported != self.arch:
             raise RuntimeError(f"The chroot reports {reported!r}, expected {self.arch!r}")
         project = self.root / "project"
@@ -584,11 +561,9 @@ class Build:
             self.chroot("install", "-d", "-o", "builder", "-g", "builder", "/home/builder/packages", "/home/builder/.abuild")
             jobs = os.environ.get("CARGO_BUILD_JOBS", "")
             # The Craft profiles ask for LTO with a single codegen unit, so the
-            # last link of the biggest binary is one single-threaded pass over
-            # the whole program. That pass is the only build phase that has ever
-            # killed a shard here, and it kills them two different ways, which is
-            # why both of the overrides below raise the codegen unit count and
-            # why they are decided separately.
+            # last link of the biggest binary can hold the whole program in one
+            # compiler process. Native and emulated shards need different
+            # profile overrides because they have different bottlenecks.
             #
             #   exit 143 with "the runner has received a shutdown signal" - the
             #   VM ran out of RAM and swap and stopped responding before the
@@ -605,24 +580,18 @@ class Build:
             # compile phase, but a single codegen unit leaves the link as one
             # process no matter how many cores are idle.
             #
-            # Under qemu-user the shard is fighting the step's wall-clock limit,
-            # so it disables cross-crate LTO and uses enough codegen units that the
-            # link is not the tail: vectorcraft spent the whole 330 minutes of
-            # the step inside that link on a cold cache, and photocraft is
-            # already at 328. One job keeps instruction translation inside the
-            # runner's memory. A native 64-bit build keeps abuild's defaults,
-            # and only aarch64 gets anything overridden at all.
-            #
-            # A 32-bit target needs cross-crate LTO off for a second reason: a
-            # 32-bit rustc cannot address that link at all, however many cores
-            # run it, so this also applies to x86 on an x86_64 runner.
-            emulated = self.arch not in NATIVE.get(platform.machine(), set())
-            cargo = {} if not (emulated or self.arch in ARCH32) else {
-                "CARGO_PROFILE_RELEASE_LTO": "false",
-                "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": EMULATED_CODEGEN_UNITS,
-            }
+            # Cold qemu-user builds also time out during compilation. Allow two
+            # compiler jobs on the hosted runner and reduce LLVM work by using
+            # opt-level 2 without cross-crate LTO.
+            emulated = self.arch != platform.machine()
+            cargo = {}
             if emulated:
-                cargo["CARGO_BUILD_JOBS"] = "1"
+                cargo.update(
+                    CARGO_BUILD_JOBS="2",
+                    CARGO_PROFILE_RELEASE_LTO="false",
+                    CARGO_PROFILE_RELEASE_OPT_LEVEL="2",
+                    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=EMULATED_CODEGEN_UNITS,
+                )
             # aarch64 is native, so it keeps LTO enabled and pays for
             # that in memory. The ARM runner is the same 4 vCPU / 16 GB machine
             # as the x86_64 one, but lightcraft and vectorcraft have now lost
@@ -848,7 +817,8 @@ class Build:
             self.repository.mkdir(parents=True, exist_ok=True)
             shutil.rmtree(self.pages, ignore_errors=True)
             (self.pages / CONFIG["repository_path"]).mkdir(parents=True)
-            architectures = sorted(p for p in (self.out / "packages").iterdir() if p.is_dir()) if (self.out / "packages").is_dir() else []
+            packages = self.out / "packages"
+            architectures = sorted(p for p in packages.glob("*") if p.name in ARCHES and p.is_dir())
             if not architectures:
                 raise RuntimeError("No built packages to index under " + str(self.out / "packages"))
             if self.expect and not self.baseline:

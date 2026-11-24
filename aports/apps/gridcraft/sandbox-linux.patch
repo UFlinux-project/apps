@@ -1,0 +1,77 @@
+Compile the Linux sandbox only on supported seccomp architectures.
+Keep the aarch64 kexec_file_load restriction on musl.
+
+--- a/crates/sandbox/src/lib.rs
++++ b/crates/sandbox/src/lib.rs
+@@ -29,7 +29,7 @@
+ #![forbid(unsafe_code)]
+ 
+ mod canary;
+-#[cfg(target_os = "linux")]
++#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+ mod linux;
+ #[cfg(target_os = "macos")]
+ mod macos;
+@@ -164,19 +164,19 @@
+     platform::exec(checked.program(), checked.args())
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+ use linux as platform;
+ #[cfg(target_os = "macos")]
+ use macos as platform;
+-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
++#[cfg(not(any(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")), target_os = "macos")))]
+ use unsupported as platform;
+ 
+ /// Platforms without confinement: every launch is refused.
+-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
++#[cfg(not(any(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")), target_os = "macos")))]
+ mod unsupported {
+     use super::{Command, OsString, Path, Result, SandboxError, Support, policy::Checked};
+ 
+-    const WHY: &str = "GridCraft confines programs on Linux and macOS only";
++    const WHY: &str = "GridCraft confinement is unavailable on this platform";
+ 
+     pub fn support() -> Support {
+         Support::Unsupported(WHY.into())
+@@ -238,7 +238,7 @@
+ }
+ 
+ /// Replaces this process with `program` (the confining platforms).
+-#[cfg(any(target_os = "linux", target_os = "macos"))]
++#[cfg(any(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")), target_os = "macos"))]
+ fn exec_unix(program: &Path, args: &[OsString]) -> Result<std::convert::Infallible> {
+     use std::os::unix::process::CommandExt as _;
+     let mut cmd = Command::new(program);
+--- a/crates/sandbox/src/linux.rs
++++ b/crates/sandbox/src/linux.rs
+@@ -31,11 +31,10 @@
+ const SYS_REMOVEXATTRAT: libc::c_long = 466;
+ const SYS_OPEN_TREE_ATTR: libc::c_long = 467;
+ const SYS_FILE_SETATTR: libc::c_long = 469;
+-// `libc` names no kexec_file_load on riscv64 (0.2.190). It takes 294 from the kernel's generic
+-// table there, as on aarch64, where `libc` names it.
+-#[cfg(target_arch = "riscv64")]
++// Alpine's aarch64 musl libc bindings do not expose kexec_file_load.
++#[cfg(target_arch = "aarch64")]
+ const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
+-#[cfg(not(target_arch = "riscv64"))]
++#[cfg(target_arch = "x86_64")]
+ const SYS_KEXEC_FILE_LOAD: libc::c_long = libc::SYS_kexec_file_load;
+ 
+ pub fn support() -> Support {
+@@ -461,9 +460,9 @@
+         #[cfg(target_arch = "x86_64")]
+         assert_eq!(SYS_FCHMODAT2, libc::SYS_fchmodat2);
+         assert_eq!((SYS_SETXATTRAT, SYS_REMOVEXATTRAT, SYS_OPEN_TREE_ATTR, SYS_FILE_SETATTR), (463, 466, 467, 469));
+-        // The generic table's number, which riscv64 writes here, is the one `libc` gives aarch64.
+-        #[cfg(target_arch = "aarch64")]
+-        assert_eq!(libc::SYS_kexec_file_load, 294);
++        // GNU libc exposes the syscall from the generic table on aarch64.
++        #[cfg(all(target_arch = "aarch64", target_env = "gnu"))]
++        assert_eq!(SYS_KEXEC_FILE_LOAD, libc::SYS_kexec_file_load);
+     }
+ 
+     #[test]

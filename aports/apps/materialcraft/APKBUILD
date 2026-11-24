@@ -4,7 +4,7 @@ pkgver=0.4.1
 pkgrel=0
 pkgdesc="Design procedural PBR materials with node graphs"
 url="https://getartcraft.com/apps/materialcraft"
-arch="all"
+arch="x86_64 aarch64 ppc64le riscv64"
 license="Apache-2.0"
 # Upstream resolves git dependencies (craft-libs, egui, winit forks) that have no
 # crates.io tarballs, so the build cannot be offline.

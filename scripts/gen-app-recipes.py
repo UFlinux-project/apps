@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import sys
-from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOCK = os.path.join(ROOT, "config", "apps.lock.json")
@@ -34,7 +33,7 @@ DEP_PW = "pipewire-dev mesa-dev libdrm-dev"
 #   feats   -> cargo features, qualified the way upstream's package.sh passes them
 #   man     -> upstream ships a man-and-completions example for the CLI
 #   mk      -> extra makedepends beyond the common set
-#   patches -> local source patches applied by abuild
+#   patches -> local patches applied by abuild
 #
 # The common set needs explaining: git because every app depends on git repos
 # (craft-libs, egui, winit) with no crates.io tarball; cmake + samurai + perl
@@ -70,7 +69,7 @@ APPS = {
     "gridcraft": {
         "desc": "Calculate, analyse and chart data in workbooks",
         "license": "MIT OR Apache-2.0",
-        "patches": ["sandbox-32bit.patch"],
+        "patches": ["sandbox-linux.patch"],
     },
     "lightcraft": {
         "desc": "Organise photos and develop raw files, non-destructively",
@@ -112,7 +111,7 @@ pkgver={pkgver}
 pkgrel=0
 pkgdesc="{desc}"
 url="https://getartcraft.com/apps/{app}"
-arch="all"
+arch="x86_64 aarch64 ppc64le riscv64"
 license="{license}"
 # Upstream resolves git dependencies (craft-libs, egui, winit forks) that have no
 # crates.io tarballs, so the build cannot be offline.
@@ -138,7 +137,7 @@ subpackages="
 \t$pkgname-doc
 {sub}
 \t"
-source="{source}"
+source="{sources}"
 builddir="$srcdir/{app}-{pkgver}"
 {vars}
 sha512sums="
@@ -155,13 +154,6 @@ def render(app, lock, meta):
     bins = meta.get("bins") or [app, app + "-cli"]
     feats = meta.get("feats") or lock.get("features") or []
     man = bool(meta.get("man") or lock.get("man_completions"))
-    archive = f'{app}-{lock["version"]}.tar.gz'
-    sources = [f'{archive}::{lock["url"]}']
-    sums = [f'{lock["sha512"]}  {archive}']
-    for patch in meta.get("patches", []):
-        sources.append(patch)
-        digest = hashlib.sha512(Path(APKS, app, patch).read_bytes()).hexdigest()
-        sums.append(f"{digest}  {patch}")
 
     mk = ["\t" + d for d in (meta.get("mk") or "").split() if d]
     # Anything actually linked (libwayland-egl, libGL, libEGL, libasound, ...) is
@@ -195,6 +187,15 @@ def render(app, lock, meta):
         vars_ += "\n_craft_man=yes"
     vars_ += "\n\n. \"$startdir/../craft-common.sh\""
 
+    archive = f"{app}-{lock['version']}.tar.gz"
+    sources = [f"{archive}::{lock['url']}"]
+    sums = [f"{lock['sha512']}  {archive}"]
+    for patch in meta.get("patches", []):
+        sources.append(patch)
+        with open(os.path.join(APKS, app, patch), "rb") as stream:
+            checksum = hashlib.file_digest(stream, "sha512").hexdigest()
+        sums.append(f"{checksum}  {patch}")
+
     out = TEMPLATE.format(
         pkgname=app,
         pkgver=lock["version"],
@@ -204,7 +205,7 @@ def render(app, lock, meta):
         mk="\n".join(mk),
         dep=indent_list(dep, ""),
         sub="\n".join(sub),
-        source="\n\t".join(sources),
+        sources="\n\t".join(sources),
         vars=vars_,
         sums="\n".join(sums),
     )

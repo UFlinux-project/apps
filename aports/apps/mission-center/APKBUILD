@@ -25,7 +25,7 @@ pkgver=1.2.0
 pkgrel=0
 pkgdesc="Monitor CPU, GPU, memory, network, disks, processes and sensors"
 url="https://gitlab.com/mission-center-devs/mission-center"
-arch="all"
+arch="x86_64 aarch64 ppc64le riscv64"
 license="GPL-3.0-or-later"
 # magpie's Cargo.lock pins one git dependency (pop-os/upower_dbus) that has no
 # crates.io tarball, so the build cannot be fully offline.

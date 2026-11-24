@@ -42,10 +42,8 @@ packages are built against, and the path the repository is published under.
 
 Craft Anything and ArtCraft Studio are deliberately not packaged here.
 
-The full build targets every architecture UFLinux ships: `x86`, `x86_64`,
-`aarch64`, `armv7`, `ppc64le` and `riscv64`. The 32-bit builds disable
-cross-crate Rust LTO and use 64 codegen units to keep linking within the
-compiler's address space. Shared libraries come from Alpine wherever a
+The full build targets `x86_64`, `aarch64`, `ppc64le` and `riscv64`.
+Shared libraries come from Alpine wherever a
 compatible package exists (`ffmpeg`, `openh264`, `pipewire`,
 `mesa`, `fontconfig`, `icu`, ...), so an installed app pulls dependencies that
 the base system already provides instead of carrying its own copies.
@@ -112,9 +110,7 @@ Useful details:
   optimizes for size. PGO builds require more time and disk space.
 - An `--arch` the host cannot execute natively needs `qemu-user-binfmt` with the
   `F` (fix-binary) flag; `build.py` refuses to start rather than fail obscurely
-  later. On CI, the x86_64 runner runs `x86` directly via IA-32 compatibility,
-  and the ARM64 runner uses `qemu-arm` for `armv7`. The table lives in
-  `NATIVE` in `scripts/build.py`.
+  later. CI builds x86_64 and aarch64 natively and emulates ppc64le and riscv64.
 - Downloads, the apk cache, `CARGO_HOME` and `CARGO_TARGET_DIR` live under
   `--cache` (default `.cache/build/<arch>`), so re-running a build is incremental
   and safe to delete at any time.

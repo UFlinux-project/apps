@@ -17,7 +17,7 @@ pkgdesc="UFLinux file manager: GTK4 browsing, archives, mounts and search"
 url="https://github.com/UFlinux-project/uflinux-files"
 # Upstream lists the architectures it has tested; this project publishes the set
 # in config/architectures.json, so the recipe must not narrow it.
-arch="all"
+arch="x86_64 aarch64 ppc64le riscv64"
 license="GPL-3.0-only"
 depends="uflinux-files-searchd=$pkgver-r$pkgrel desktop-file-utils hicolor-icon-theme"
 # Not `udisks2`: UFLinux has no udisks2, so SMB and NFS go through our own
@@ -54,14 +54,13 @@ _commit="760e47ac1cfa98b9310ff58c0424eebe7c88b0bd"
 # GitHub's archive of one commit replaces upstream's hand-made bundle: it
 # carries Cargo.toml, Cargo.lock, rust-toolchain.toml, crates/, data/, docs/,
 # tests/, LICENSE and README.md, and its checksum does not drift.
-source="$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz
-	trash-timestamps.patch"
+source="$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz"
 builddir="$srcdir/$pkgname-$_commit"
 export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_TEST_DEBUG=0
 # Upstream forces the distro's release profile with plain assignments, which
-# would also override the values scripts/build.py injects to keep an emulated or
-# 32-bit build cheap. Assign these only when unset, so the environment wins.
+# would override the values scripts/build.py injects for emulated builds.
+# Assign these only when unset so the environment wins.
 : "${CARGO_PROFILE_RELEASE_OPT_LEVEL:=3}"
 : "${CARGO_PROFILE_RELEASE_LTO:=fat}"
 : "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:=8}"
@@ -173,5 +172,4 @@ mount_helper() {
 # abuild cannot reuse a cached archive from an older pin at the same pkgver.
 sha512sums="
 22a0eda1909a872683cd94f0ccf4e0a5fa216f02668deb8778fd53856ba86ae6eeaacd76697911f5d797528c3e162e8de82b3a0ae4bbfd63c91c6363e6f8ccd0  uflinux-files-760e47ac1cfa98b9310ff58c0424eebe7c88b0bd.tar.gz
-522802dfca8a24cc32eef9327178dce78fa6f8ae7f161a94c284aca1a9d0cab770b88de298c33080360d8249eb3175a876cf5bceadf68d62846a0b8d3b6f229d  trash-timestamps.patch
 "

@@ -148,12 +148,9 @@ that apply to any recipe here:
   APKBUILD" check for every remote entry, so a `::` URL turns the file into a
   stray-file warning even though it is listed. Keep the upstream URL as a
   comment instead.
-- `arch="all"` unless the package genuinely cannot work somewhere. The build
-  matrix in `scripts/ci-matrix.py` decides what is actually built for which
-  architecture, and `config/architectures.json` is where that is configured; a
-  recipe's own `arch=` is the second line of defence, and repeating the matrix
-  there is what turns one config edit into a build failure instead of a silently
-  missing package.
+- Use `arch="x86_64 aarch64 ppc64le riscv64"` for apps built for every target.
+  `config/architectures.json` defines the CI matrix. The recipe's `arch=` also
+  applies when abuild runs outside the project builder.
 - Recipe shell code has to parse under **busybox ash**, because that is the
   interpreter abuild runs (`#!/bin/ash -e`). Bashisms are the nasty class of bug
   here: `${var^^}` or `${var:0:1}` pass `sh -n` on a Debian/Ubuntu runner and then
@@ -202,7 +199,7 @@ needs the key too, not only the one that publishes.
 Emulation is what makes the matrix expensive, and `build.py` handles it rather
 than the workflow: it compares the target against the runner's own `uname -m` and,
 when qemu-user is involved, sets `CARGO_BUILD_JOBS=1` so instruction translation
-stays inside the runner's memory. Emulated and 32-bit builds disable cross-crate
+stays inside the runner's memory. Emulated builds disable cross-crate
 LTO and use `EMULATED_CODEGEN_UNITS` to split code generation into smaller units.
 On ppc64le, a cold `vectorcraft` build previously spent the entire 330-minute
 build step in its final link. The driver writes the overrides to abuild's user
@@ -228,12 +225,6 @@ concurrent `rustc` at `ARM64_BUILD_JOBS` so an LTO link and its neighbours do
 not all ask for memory at once, while `ARM64_CODEGEN_UNITS` splits the link into
 several backends. LTO stays enabled on native aarch64. An explicit
 `CARGO_BUILD_JOBS` still wins over the cap.
-
-The 32-bit targets (`x86`, `armv7`) disable cross-crate LTO and use 64 codegen units
-even when the host runs the chroot directly. A 32-bit `rustc` on an x86_64
-kernel still has a 32-bit address space. Previous builds of the larger Craft
-apps failed with `rustc-LLVM ERROR: out of memory` while linking as a single
-codegen unit.
 
 A recipe that runs `cargo` itself instead of leaving it to meson has to know that
 `BUILD_ROOT` is abuild's own variable: it holds the directory `rootbld()` created

@@ -90,9 +90,7 @@ def configuration(arches, apps, event, ref, wanted=""):
                 "runner": arches[a]["runner"],
                 "package": p,
                 # Decides one thing: whether the shard installs qemu-user. This
-                # x86 runs directly on the x86_64 runner. ARM64 runners use
-                # qemu-arm for armv7 because AArch32 support is optional.
-                "emulated": "true" if a not in {"x86", "x86_64", "aarch64"} else "false",
+                "emulated": "true" if a not in {"x86_64", "aarch64"} else "false",
             }
             for a in selected
             for p in built
