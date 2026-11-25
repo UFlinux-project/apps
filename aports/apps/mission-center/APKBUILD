@@ -22,7 +22,7 @@
 # target cannot be executed, so they are built with -Os.
 pkgname=mission-center
 pkgver=1.2.0
-pkgrel=0
+pkgrel=1
 pkgdesc="Monitor CPU, GPU, memory, network, disks, processes and sensors"
 url="https://gitlab.com/mission-center-devs/mission-center"
 arch="x86_64 aarch64 ppc64le riscv64"
@@ -78,12 +78,14 @@ depends="
 	shared-mime-info
 	nethogs
 	lm-sensors
-	xdg-util
+	xdg-utils
 "
 # nethogs backs the per-process network view, lm-sensors the fan and temperature
-# rows, and xdg-utils the "open in browser" links.  Both programs log an error and
-# carry on when one of them is missing, so these stay recommendations.
-recommends="nethogs lm-sensors xdg-utils"
+# rows, and xdg-utils the "open in browser" links.  Mission Center logs an error
+# and carries on when one of them is missing, but all three features are
+# advertised in the UI, so they are dependencies rather than recommendations.
+# The apk is spelled xdg-utils: there is no xdg-util, and an unknown name in
+# depends fails the deps phase before anything is compiled.
 subpackages="$pkgname-dbg"
 
 _b="$srcdir/build"
