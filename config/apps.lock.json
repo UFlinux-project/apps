@@ -43,10 +43,10 @@
     },
     "designcraft": {
       "repo": "storytold/designcraft",
-      "tag": "v0.20.1",
-      "version": "0.20.1",
-      "url": "https://github.com/storytold/designcraft/archive/refs/tags/v0.20.1.tar.gz",
-      "sha512": "579f29e4524892935a2a5920bfc5ddbbd37e0e139b23c827d8bb9d00a58e9feef3b5e3a2a5c99d5e7ca6c013489230a545dd4e40583cbd2bd938012e1e02d894",
+      "tag": "v0.21.1",
+      "version": "0.21.1",
+      "url": "https://github.com/storytold/designcraft/archive/refs/tags/v0.21.1.tar.gz",
+      "sha512": "0295e1d8f270f23690c42fc546b72043235bf5fd58c080b1334fa0a0b3eb83d329efa113bdac6fc738764f564420cd95427d99a219b589f38ac47f4a31742c0b",
       "bins": [
         "designcraft",
         "designcraft-cli"
