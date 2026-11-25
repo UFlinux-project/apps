@@ -76,6 +76,9 @@ depends="
 	dconf
 	hicolor-icon-theme
 	shared-mime-info
+	nethogs
+	lm-sensors
+	xdg-util
 "
 # nethogs backs the per-process network view, lm-sensors the fan and temperature
 # rows, and xdg-utils the "open in browser" links.  Both programs log an error and

@@ -19,7 +19,7 @@ url="https://github.com/UFlinux-project/uflinux-files"
 # in config/architectures.json, so the recipe must not narrow it.
 arch="x86_64 aarch64 ppc64le riscv64"
 license="GPL-3.0-only"
-depends="uflinux-files-searchd=$pkgver-r$pkgrel desktop-file-utils hicolor-icon-theme"
+depends="uflinux-files-searchd=$pkgver-r$pkgrel desktop-file-utils hicolor-icon-theme $pkgname-mount-helper=$pkgver-r$pkgrel p7zip libarchive-tools xdg-utils"
 # Not `udisks2`: UFLinux has no udisks2, so SMB and NFS go through our own
 # polkit action and /usr/libexec/uflinux-files-mount. The session agent that
 # answers the pkexec prompt is the one uflinux-desktop already registers.
@@ -44,8 +44,7 @@ _bin_provider="uflinux-files-provider"
 # and the package that is absent is a message rather than a broken feature.
 # One assignment only: this file is sourced by a shell, so a second `recommends=`
 # would silently replace the first.
-recommends="$pkgname-desktop=$pkgver-r$pkgrel $pkgname-mount-helper=$pkgver-r$pkgrel
-	p7zip libarchive-tools xdg-utils"
+recommends="$pkgname-desktop=$pkgver-r$pkgrel"
 options="net"
 # Upstream has no tags and no releases, so a commit is the only addressable pin.
 # scripts/update-files.py rewrites this, pkgver, pkgrel and the checksum below
