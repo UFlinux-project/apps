@@ -30,10 +30,10 @@
     },
     "deckcraft": {
       "repo": "storytold/deckcraft",
-      "tag": "v0.18.1",
-      "version": "0.18.1",
-      "url": "https://github.com/storytold/deckcraft/archive/refs/tags/v0.18.1.tar.gz",
-      "sha512": "4b492f9bf7aa0e33d480bf1e16a660af687c2ad0f67f6b713f2577388a8cdd9cdee78a1979c4adc99d5eb6c6de5e3a55aa823578a3f6549fcc91e729e8441bc7",
+      "tag": "v0.19.1",
+      "version": "0.19.1",
+      "url": "https://github.com/storytold/deckcraft/archive/refs/tags/v0.19.1.tar.gz",
+      "sha512": "382daf6a8464fd98f0d43edd0c246730285cbbb3a0b9375f92a41ec11606ca877a72197168265fc05662dc4f9beb9aa0b59ac3c06b82b4276640db3c46ccac30",
       "bins": [
         "deckcraft",
         "deckcraft-cli"
@@ -191,10 +191,10 @@
     },
     "wordcraft": {
       "repo": "storytold/wordcraft",
-      "tag": "v0.18.1",
-      "version": "0.18.1",
-      "url": "https://github.com/storytold/wordcraft/archive/refs/tags/v0.18.1.tar.gz",
-      "sha512": "60b78c17b251b9ecf56128735f1dde33cefa2ff95003fa5d817961353b6207000b3aa32d5ca75df63f1d8f1996b353d195a7b6115b973d9fe1fe4fc82931965b",
+      "tag": "v0.19.1",
+      "version": "0.19.1",
+      "url": "https://github.com/storytold/wordcraft/archive/refs/tags/v0.19.1.tar.gz",
+      "sha512": "834ec8c7315e406079ba6b52dbe35fa8efe7d9b8395d2c8a30dd85598567eb11f362fcdf15ec39eaba4fb1cf2c9b5431f9d6356526b64fbf7b2e3044f58c778e",
       "bins": [
         "wordcraft",
         "wordcraft-cli"
